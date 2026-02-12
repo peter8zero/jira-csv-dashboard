@@ -692,6 +692,16 @@ tr:hover {{ background: var(--xps-charcoal); }}
     border-radius: 6px; color: var(--xps-text); font-size: 0.9rem;
 }}
 .search-box:focus {{ outline: none; border-color: var(--xps-blue); }}
+.stale-filters {{
+    display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
+}}
+.stale-filters label {{ font-size: 0.8rem; color: var(--xps-text-muted); }}
+.stale-filters select, .stale-filters input {{
+    padding: 6px 10px; background: var(--xps-charcoal); border: 1px solid var(--xps-border);
+    border-radius: 6px; color: var(--xps-text); font-size: 0.8rem; min-width: 140px;
+}}
+.stale-filters select:focus, .stale-filters input:focus {{ outline: none; border-color: var(--xps-blue); }}
+.stale-filter-group {{ display: flex; flex-direction: column; gap: 3px; }}
 .pagination {{
     display: flex; justify-content: center; align-items: center; gap: 8px;
     margin-top: 12px; flex-wrap: wrap;
@@ -795,6 +805,7 @@ tr:hover {{ background: var(--xps-charcoal); }}
 <!-- Staleness Table -->
 <div class="section">
     <h2>Staleness Report</h2>
+    <div class="stale-filters" id="stale-filters"></div>
     <div id="staleness-table"></div>
 </div>
 
@@ -1016,7 +1027,7 @@ function sortArrow(tableId, colKey) {{
     return s.asc ? ' ▲' : ' ▼';
 }}
 
-// Staleness table
+// Staleness table with filters
 const staleCols = [
     {{ key: 'key', label: 'Key' }},
     {{ key: 'summary', label: 'Summary' }},
@@ -1027,6 +1038,31 @@ const staleCols = [
     {{ key: 'days_since', label: 'Days' }},
     {{ key: 'comment_preview', label: 'Comment' }},
 ];
+const staleFilters = {{ key: '', status: '', reporter: '', assignee: '' }};
+
+function buildStaleFilterOptions() {{
+    const statuses = [...new Set(stalenessData.map(r => r.status))].sort();
+    const reporters = [...new Set(stalenessData.map(r => r.reporter))].sort();
+    const assignees = [...new Set(stalenessData.map(r => r.assignee))].sort();
+    const el = document.getElementById('stale-filters');
+    el.innerHTML = `
+        <div class="stale-filter-group"><label>Key</label><input type="text" placeholder="Filter by key…" oninput="staleFilters.key=this.value.toLowerCase();renderStaleness()" /></div>
+        <div class="stale-filter-group"><label>Status</label><select onchange="staleFilters.status=this.value;renderStaleness()"><option value="">All</option>${{statuses.map(s => `<option value="${{s}}">${{s}}</option>`).join('')}}</select></div>
+        <div class="stale-filter-group"><label>Reporter</label><select onchange="staleFilters.reporter=this.value;renderStaleness()"><option value="">All</option>${{reporters.map(s => `<option value="${{s}}">${{s}}</option>`).join('')}}</select></div>
+        <div class="stale-filter-group"><label>Assignee</label><select onchange="staleFilters.assignee=this.value;renderStaleness()"><option value="">All</option>${{assignees.map(s => `<option value="${{s}}">${{s}}</option>`).join('')}}</select></div>
+    `;
+}}
+
+function getFilteredStaleData() {{
+    return stalenessData.filter(r => {{
+        if (staleFilters.key && !r.key.toLowerCase().includes(staleFilters.key)) return false;
+        if (staleFilters.status && r.status !== staleFilters.status) return false;
+        if (staleFilters.reporter && r.reporter !== staleFilters.reporter) return false;
+        if (staleFilters.assignee && r.assignee !== staleFilters.assignee) return false;
+        return true;
+    }});
+}}
+
 function sortStaleness(colKey) {{
     sortTableData('stale', stalenessData, colKey);
     renderStaleness();
@@ -1034,17 +1070,22 @@ function sortStaleness(colKey) {{
 function renderStaleness() {{
     const el = document.getElementById('staleness-table');
     if (!stalenessData || stalenessData.length === 0) {{ el.innerHTML = '<div class="no-data">No open tickets found</div>'; return; }}
+    const filtered = getFilteredStaleData();
     let html = '<table><thead><tr>';
     for (const c of staleCols) {{
         html += `<th onclick="sortStaleness('${{c.key}}')">${{c.label}}${{sortArrow('stale', c.key)}}</th>`;
     }}
     html += '</tr></thead><tbody>';
-    for (const r of stalenessData) {{
-        let cls = '';
-        if (r.days_since > 30) cls = 'stale-red';
-        else if (r.days_since > {stale_days}) cls = 'stale-amber';
-        else cls = 'stale-green';
-        html += `<tr class="${{cls}}"><td>${{r.key}}</td><td>${{r.summary}}</td><td>${{r.reporter}}</td><td>${{r.assignee}}</td><td>${{r.status}}</td><td>${{r.last_comment_date}}</td><td>${{r.days_since}}</td><td>${{r.comment_preview}}</td></tr>`;
+    if (filtered.length === 0) {{
+        html += `<tr><td colspan="${{staleCols.length}}" style="text-align:center;color:var(--xps-text-muted);padding:20px;">No tickets match the current filters</td></tr>`;
+    }} else {{
+        for (const r of filtered) {{
+            let cls = '';
+            if (r.days_since > 30) cls = 'stale-red';
+            else if (r.days_since > {stale_days}) cls = 'stale-amber';
+            else cls = 'stale-green';
+            html += `<tr class="${{cls}}"><td>${{r.key}}</td><td>${{r.summary}}</td><td>${{r.reporter}}</td><td>${{r.assignee}}</td><td>${{r.status}}</td><td>${{r.last_comment_date}}</td><td>${{r.days_since}}</td><td>${{r.comment_preview}}</td></tr>`;
+        }}
     }}
     html += '</tbody></table>';
     el.innerHTML = html;
@@ -1163,6 +1204,7 @@ renderDonut('chart-priority', priorityData, priorityColours);
 renderDonut('chart-type', typeData, typeColours);
 renderAssigneeBreakdown();
 renderReporterBreakdown();
+buildStaleFilterOptions();
 renderStaleness();
 renderBarChart('resolution-chart', resolutionData, null);
 renderBarChart('age-chart', ageBucketsData, null);
