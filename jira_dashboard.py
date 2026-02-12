@@ -837,6 +837,78 @@ class DashboardData:
     avg_reopen_count: float = 0.0
     sla_by_priority: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
+    # Issue themes (from short_description clustering)
+    issue_themes: List[Dict[str, Any]] = field(default_factory=list)
+
+
+def _cluster_descriptions(tickets: List[JiraTicket], max_themes: int = 25) -> List[Dict[str, Any]]:
+    """Cluster short_description values into themes using keyword extraction.
+
+    Groups similar descriptions by normalising text and finding common 2-3 word
+    phrases (ngrams).  Returns top themes with counts and sample descriptions.
+    """
+    descriptions = [t.summary for t in tickets if t.summary and t.summary.strip()]
+    if not descriptions:
+        return []
+
+    # Stop words to ignore
+    stop = {"a", "an", "the", "to", "of", "for", "in", "on", "is", "it", "and",
+            "or", "be", "as", "at", "by", "was", "are", "has", "had", "not", "but",
+            "from", "with", "this", "that", "i", "we", "they", "you", "my", "our",
+            "do", "so", "if", "no", "up", "out", "can", "all", "been", "have",
+            "will", "its", "did", "get", "got", "need", "needs", "needed",
+            "please", "hi", "hello", "thanks", "thank", "would", "could",
+            "should", "re", "fw", "fwd", "per", "via", "ie", "eg", "etc",
+            "also", "just", "about", "their", "them", "there", "these", "those",
+            "when", "what", "which", "who", "how", "very", "some", "any", "more",
+            "other", "into", "over", "only", "than", "then", "each", "after",
+            "before", "between", "same", "being", "both", "does", "done",
+            "going", "make", "may", "new", "now", "one", "two", "use", "way"}
+
+    def tokenise(text: str) -> List[str]:
+        return [w for w in re.findall(r'[a-z0-9]+', text.lower()) if w not in stop and len(w) > 1]
+
+    # Count bigrams and trigrams
+    ngram_counter: Dict[str, int] = defaultdict(int)
+    ngram_examples: Dict[str, List[str]] = defaultdict(list)
+
+    for desc in descriptions:
+        words = tokenise(desc)
+        seen_in_desc = set()
+        for n in (3, 2):
+            for i in range(len(words) - n + 1):
+                ngram = " ".join(words[i:i + n])
+                if ngram not in seen_in_desc:
+                    seen_in_desc.add(ngram)
+                    ngram_counter[ngram] += 1
+                    if len(ngram_examples[ngram]) < 3:
+                        ngram_examples[ngram].append(desc[:100])
+
+    # Filter: keep ngrams that appear in at least 3 tickets
+    candidates = [(ng, cnt) for ng, cnt in ngram_counter.items() if cnt >= 3]
+    candidates.sort(key=lambda x: -x[1])
+
+    # Remove overlapping ngrams (if a trigram covers a bigram, prefer trigram)
+    used_themes: List[Dict[str, Any]] = []
+    covered_bigrams: set = set()
+    for ng, cnt in candidates:
+        words = ng.split()
+        if len(words) == 2 and ng in covered_bigrams:
+            continue
+        used_themes.append({
+            "theme": ng.title(),
+            "count": cnt,
+            "examples": ngram_examples[ng][:3],
+        })
+        # Mark constituent bigrams as covered
+        if len(words) == 3:
+            covered_bigrams.add(" ".join(words[:2]))
+            covered_bigrams.add(" ".join(words[1:]))
+        if len(used_themes) >= max_themes:
+            break
+
+    return used_themes
+
 
 def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
                            now: Optional[datetime] = None,
@@ -1251,6 +1323,9 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
         d.avg_reassignment_count = round(sum(reassignment_values) / len(reassignment_values), 1) if reassignment_values else 0.0
         d.avg_reopen_count = round(sum(reopen_values) / len(reopen_values), 1) if reopen_values else 0.0
 
+    # Issue themes from short_description clustering
+    d.issue_themes = _cluster_descriptions(tickets)
+
     # Full ticket table data
     all_rows = []
     all_headers_set: Dict[str, None] = {}
@@ -1348,8 +1423,10 @@ def generate_html(tickets: List[JiraTicket], data: DashboardData,
     ra_matrix_json = json.dumps(data.reporter_assignee_matrix)
     headers_json = json.dumps(data.all_headers)
 
+    issue_themes_json = json.dumps(data.issue_themes)
+
     # ServiceNow-specific JSON data
-    category_data_json = json.dumps(data.category_counts) if is_sn else "{}"
+    category_data_json = json.dumps(data.subcategory_counts) if is_sn else "{}"
     contact_type_data_json = json.dumps(data.contact_type_counts) if is_sn else "{}"
     escalation_data_json = json.dumps(data.escalation_counts) if is_sn else "{}"
     assignment_group_json = json.dumps(data.assignment_group_breakdown) if is_sn else "[]"
@@ -1423,9 +1500,9 @@ def generate_html(tickets: List[JiraTicket], data: DashboardData,
     sn_extra_cards = ""
     if is_sn:
         sn_category_section = """
-<!-- Category Breakdown -->
+<!-- Subcategory Breakdown -->
 <div class="section">
-    <h2>Category Breakdown</h2>
+    <h2>Subcategory Breakdown</h2>
     <div id="chart-categories"></div>
 </div>"""
         sn_assignment_group_section = """
@@ -1726,10 +1803,11 @@ tr:hover {{ background: var(--xps-charcoal); }}
     <div id="assignee-breakdown"></div>
 </div>
 
-<!-- Reporter Breakdown -->
+<!-- Common Issue Themes -->
 <div class="section">
-    <h2>Reporter Breakdown</h2>
-    <div id="reporter-breakdown"></div>
+    <h2>Common Issue Themes</h2>
+    <p style="color:var(--xps-muted);font-size:0.85rem;margin-bottom:12px;">Recurring phrases from ticket summaries, grouped by frequency. Click a theme to see example descriptions.</p>
+    <div id="issue-themes"></div>
 </div>
 
 <!-- Reporter → Assignee Flow -->
@@ -1776,6 +1854,12 @@ tr:hover {{ background: var(--xps-charcoal); }}
     <div class="pagination" id="pagination"></div>
 </div>
 
+<!-- Reporter Breakdown -->
+<div class="section">
+    <h2>Reporter Breakdown</h2>
+    <div id="reporter-breakdown"></div>
+</div>
+
 </div>
 
 <script>
@@ -1799,6 +1883,7 @@ const epicProgress = {epic_json};
 const sprintProgress = {sprint_json};
 const estimationData = {estimation_json};
 const raMatrix = {ra_matrix_json};
+const issueThemes = {issue_themes_json};
 const allTickets = {data.all_tickets_json};
 const allHeaders = {headers_json};
 const sourceType = "{config.name}";
@@ -2011,6 +2096,22 @@ function renderRAMatrix() {{
     html += '</tr></thead><tbody>';
     for (const r of raMatrix) {{
         html += `<tr><td>${{r.reporter}}</td><td>${{r.assignee}}</td><td>${{r.count}}</td></tr>`;
+    }}
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}}
+
+// Issue themes
+function renderIssueThemes() {{
+    const el = document.getElementById('issue-themes');
+    if (!issueThemes || issueThemes.length === 0) {{ el.innerHTML = '<div class="no-data">Not enough recurring phrases found</div>'; return; }}
+    let html = '<table><thead><tr><th>Theme</th><th>Tickets</th><th style="width:60%">Example Descriptions</th></tr></thead><tbody>';
+    for (const t of issueThemes) {{
+        const exHtml = t.examples.map(e => `<div style="font-size:0.8rem;color:var(--xps-muted);padding:2px 0;">&bull; ${{e}}</div>`).join('');
+        const barW = issueThemes.length > 0 ? (t.count / issueThemes[0].count * 100) : 0;
+        html += `<tr><td style="white-space:nowrap;font-weight:600">${{t.theme}}</td>`;
+        html += `<td><div style="display:flex;align-items:center;gap:8px;"><span>${{t.count}}</span><div style="background:var(--xps-accent);height:6px;border-radius:3px;width:${{barW}}%;min-width:4px;"></div></div></td>`;
+        html += `<td>${{exHtml}}</td></tr>`;
     }}
     html += '</tbody></table>';
     el.innerHTML = html;
@@ -2295,8 +2396,9 @@ if (sourceType === 'servicenow') {{
 }}
 
 safeRender('assignee-breakdown', () => renderAssigneeBreakdown());
-safeRender('reporter-breakdown', () => renderReporterBreakdown());
+safeRender('issue-themes', () => renderIssueThemes());
 safeRender('ra-matrix', () => renderRAMatrix());
+safeRender('reporter-breakdown', () => renderReporterBreakdown());
 safeRender('stale-filters', () => buildStaleFilterOptions());
 safeRender('staleness', () => renderStaleness());
 safeRender('resolution', () => renderBarChart('resolution-chart', resolutionData, null));

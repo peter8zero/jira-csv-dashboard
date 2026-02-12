@@ -1237,7 +1237,7 @@ class TestServiceNowHTML(unittest.TestCase):
         tickets = [self._make_sn_ticket()]
         data = compute_dashboard_data(tickets, config=config)
         html_out = generate_html(tickets, data, config=config)
-        self.assertIn("Category Breakdown", html_out)
+        self.assertIn("Subcategory Breakdown", html_out)
         self.assertIn("Assignment Group Breakdown", html_out)
         self.assertIn("Contact Type Distribution", html_out)
         self.assertIn("Escalation Analysis", html_out)
@@ -1334,7 +1334,7 @@ class TestServiceNowEndToEnd(unittest.TestCase):
             html_content = Path(output_path).read_text()
             self.assertIn("<!DOCTYPE html>", html_content)
             self.assertIn("INC0001", html_content)
-            self.assertIn("Category Breakdown", html_content)
+            self.assertIn("Subcategory Breakdown", html_content)
             self.assertNotIn("Epic Progress", html_content)
 
     def test_auto_detect_sn(self):
