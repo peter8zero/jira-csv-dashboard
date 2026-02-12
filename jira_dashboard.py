@@ -55,16 +55,37 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
 }
 
 
-def _build_alias_lookup(headers: List[str]) -> Dict[str, Optional[int]]:
-    """Build a mapping from canonical field name to column index."""
+def _build_alias_lookup(headers: List[str]) -> Dict[str, List[int]]:
+    """Build a mapping from canonical field name to candidate column indices.
+
+    Returns a *list* of indices per field because Jira CSV exports often
+    contain multiple columns for the same concept (e.g. ``Sprint``,
+    ``Sprint``, ``Sprint``; or ``Custom field (Story Points)`` alongside
+    ``Custom field (Story point estimate)``).  The caller should coalesce
+    by picking the first non-empty value across all candidate columns.
+
+    Also handles Jira's ``Custom field (Name)`` wrapper — e.g. a header of
+    ``Custom field (Story Points)`` will match the alias ``story points``.
+    """
     lower_headers = [h.strip().lower() for h in headers]
-    lookup: Dict[str, Optional[int]] = {}
+    # Also build a version that strips the "custom field (...)" wrapper
+    _cf_re = re.compile(r"^custom\s+field\s*\((.+)\)$")
+    unwrapped = []
+    for h in lower_headers:
+        m = _cf_re.match(h)
+        unwrapped.append(m.group(1).strip() if m else h)
+
+    lookup: Dict[str, List[int]] = {}
     for canonical, aliases in COLUMN_ALIASES.items():
-        lookup[canonical] = None
+        indices: List[int] = []
+        seen: set = set()
         for alias in aliases:
-            if alias in lower_headers:
-                lookup[canonical] = lower_headers.index(alias)
-                break
+            # Collect ALL matching columns for each alias
+            for i, (lh, uw) in enumerate(zip(lower_headers, unwrapped)):
+                if i not in seen and (lh == alias or uw == alias):
+                    indices.append(i)
+                    seen.add(i)
+        lookup[canonical] = indices
     return lookup
 
 
@@ -257,9 +278,10 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
     tickets: List[JiraTicket] = []
 
     def _get(row: List[str], canonical: str) -> str:
-        idx = lookup.get(canonical)
-        if idx is not None and idx < len(row):
-            return row[idx].strip()
+        """Return the first non-empty value across all candidate columns."""
+        for idx in lookup.get(canonical, []):
+            if idx < len(row) and row[idx].strip():
+                return row[idx].strip()
         return ""
 
     for row_num, row in enumerate(reader, start=2):
@@ -306,7 +328,7 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
 
     if verbose:
         print(f"Parsed {len(tickets)} tickets from {filepath}")
-        print(f"  Columns found: {', '.join(c for c, i in lookup.items() if i is not None)}")
+        print(f"  Columns found: {', '.join(c for c, indices in lookup.items() if indices)}")
         print(f"  Comment columns: {len(comment_cols)}")
 
     return tickets

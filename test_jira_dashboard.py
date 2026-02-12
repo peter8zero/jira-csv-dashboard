@@ -118,31 +118,43 @@ class TestColumnNormalisation(unittest.TestCase):
     def test_standard_headers(self):
         headers = ["Issue key", "Summary", "Status", "Assignee", "Priority"]
         lookup = _build_alias_lookup(headers)
-        self.assertEqual(lookup["key"], 0)
-        self.assertEqual(lookup["summary"], 1)
-        self.assertEqual(lookup["status"], 2)
-        self.assertEqual(lookup["assignee"], 3)
-        self.assertEqual(lookup["priority"], 4)
+        self.assertEqual(lookup["key"], [0])
+        self.assertEqual(lookup["summary"], [1])
+        self.assertEqual(lookup["status"], [2])
+        self.assertEqual(lookup["assignee"], [3])
+        self.assertEqual(lookup["priority"], [4])
 
     def test_alternate_headers(self):
         headers = ["Key", "Title", "Issue Status", "Assigned To"]
         lookup = _build_alias_lookup(headers)
-        self.assertEqual(lookup["key"], 0)
-        self.assertEqual(lookup["summary"], 1)  # "title" is a summary alias
-        self.assertEqual(lookup["status"], 2)
-        self.assertEqual(lookup["assignee"], 3)
+        self.assertEqual(lookup["key"], [0])
+        self.assertEqual(lookup["summary"], [1])  # "title" is a summary alias
+        self.assertEqual(lookup["status"], [2])
+        self.assertEqual(lookup["assignee"], [3])
 
     def test_case_insensitive(self):
         headers = ["ISSUE KEY", "SUMMARY", "STATUS"]
         lookup = _build_alias_lookup(headers)
-        self.assertEqual(lookup["key"], 0)
-        self.assertEqual(lookup["summary"], 1)
+        self.assertEqual(lookup["key"], [0])
+        self.assertEqual(lookup["summary"], [1])
 
     def test_missing_columns(self):
         headers = ["Issue key", "Summary"]
         lookup = _build_alias_lookup(headers)
-        self.assertEqual(lookup["key"], 0)
-        self.assertIsNone(lookup["priority"])
+        self.assertEqual(lookup["key"], [0])
+        self.assertEqual(lookup["priority"], [])
+
+    def test_custom_field_wrapper(self):
+        headers = ["Custom field (Story Points)", "Custom field (Story point estimate)"]
+        lookup = _build_alias_lookup(headers)
+        # Both should be candidate columns for story_points
+        self.assertIn(0, lookup["story_points"])
+        self.assertIn(1, lookup["story_points"])
+
+    def test_duplicate_columns_coalesced(self):
+        headers = ["Sprint", "Sprint", "Sprint"]
+        lookup = _build_alias_lookup(headers)
+        self.assertEqual(lookup["sprint"], [0, 1, 2])
 
     def test_find_comment_columns(self):
         headers = ["Key", "Summary", "Comment", "Comment.1", "Status"]
