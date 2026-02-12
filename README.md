@@ -1,14 +1,22 @@
-# Jira CSV Dashboard
+# Jira / ServiceNow CSV Dashboard
 
-A Python CLI tool that transforms a Jira CSV export into a single self-contained HTML dashboard with detailed MI breakdowns.
+A Python CLI tool that transforms a Jira or ServiceNow CSV export into a single self-contained HTML dashboard with detailed MI breakdowns.
 
 No external dependencies — uses Python standard library only.
 
 ## Quick Start
 
 ```bash
-python3 jira_dashboard.py export.csv
+# Jira CSV — source auto-detected
+python3 jira_dashboard.py jira_export.csv
 open dashboard.html
+
+# ServiceNow CSV — source auto-detected
+python3 jira_dashboard.py servicenow_export.csv
+open dashboard.html
+
+# Force source type
+python3 jira_dashboard.py export.csv --source servicenow -o sn_dashboard.html
 ```
 
 ## Usage
@@ -19,16 +27,17 @@ python3 jira_dashboard.py <input_csv> [options]
 
 | Argument | Description |
 |----------|-------------|
-| `input_csv` | Path to your Jira CSV export (positional, required) |
+| `input_csv` | Path to your Jira or ServiceNow CSV export (positional, required) |
 | `-o, --output` | Output HTML file path (default: `dashboard.html`) |
 | `-v, --verbose` | Print detailed processing stats to the terminal |
 | `--stale-days N` | Days without activity to flag a ticket as stale (default: 14) |
 | `--title TEXT` | Dashboard title (default: auto-detected from issue keys) |
+| `--source` | CSV source format: `jira`, `servicenow`, or `auto` (default: `auto`) |
 
 ### Examples
 
 ```bash
-# Basic usage — generates dashboard.html
+# Basic usage — auto-detects source, generates dashboard.html
 python3 jira_dashboard.py export.csv
 
 # Custom output file with verbose logging
@@ -36,83 +45,89 @@ python3 jira_dashboard.py export.csv -o sprint42.html -v
 
 # Flag tickets as stale after 7 days, with a custom title
 python3 jira_dashboard.py export.csv --stale-days 7 --title "Sprint 42 Dashboard"
+
+# Force ServiceNow mode
+python3 jira_dashboard.py incidents.csv --source servicenow -o incidents.html
 ```
 
-## Getting Your CSV from Jira
+## Getting Your CSV
+
+### From Jira
 
 1. Go to your Jira board or filter view
 2. Click **Export** (top right) > **Export CSV (all fields)** or **Export CSV (current fields)**
 3. Save the `.csv` file
 4. Run the tool against it
 
-The tool handles Jira's inconsistent column naming automatically (e.g. "Issue key", "Key", "issue_key" all work).
+### From ServiceNow
+
+1. Navigate to your list view (e.g. Incident > All)
+2. Right-click the column headers and select **Export > CSV**
+3. Save the `.csv` file
+4. Run the tool against it
+
+## Auto-Detection
+
+The tool auto-detects whether a CSV is from Jira or ServiceNow by scoring the headers:
+
+- **Jira indicators**: `Issue key`, `Sprint`, `Epic Link`, `Story Points`, `Custom field (...)` columns
+- **ServiceNow indicators**: `Number`, `Opened at`, `Assignment group`, `Made SLA`, `Short description`, `Configuration item`, `Contact type`
+
+The source with the higher score wins. Use `--source jira` or `--source servicenow` to override.
 
 ## Dashboard Sections
 
 The generated HTML file is fully self-contained — no internet connection required to view it.
 
 ### Summary Cards
-Eight cards showing key metrics at a glance:
-- **Total Tickets** — with open/closed split
-- **Avg Age (Open)** — average age of open tickets in days
-- **Overdue** — open tickets past their due date
-- **Stale** — open tickets with no activity beyond the stale threshold
-- **Resolution Rate** — percentage of tickets resolved
-- **Avg Resolution** — average time from creation to resolution
-- **Unassigned** — open tickets with no assignee
-- **Story Points** — total story points with open points breakdown
 
-### Charts
-- **Status Breakdown** — horizontal bar chart colour-coded by status category
+**Shared** (both sources): Total Tickets, Resolution Rate, Avg Age (Open), Avg Resolution, Overdue, Stale, Unassigned.
+
+**8th card**:
+- **Jira**: Story Points (total with open breakdown)
+- **ServiceNow**: SLA Compliance % (met/missed split)
+
+**ServiceNow extra cards**: Avg Reassignments, Avg Reopens.
+
+### Shared Charts & Tables
+
+- **Status Breakdown** — horizontal bar chart colour-coded by status
 - **Assignee Workload** — open ticket count per assignee
-- **Priority Distribution** — donut chart (Critical/High/Medium/Low)
-- **Issue Type Distribution** — donut chart (Bug/Story/Task/Epic)
-- **Component Breakdown** — bar chart of ticket counts by component
-- **Label Breakdown** — bar chart of ticket counts by label (top 15)
+- **Priority Distribution** — donut chart
+- **Issue Type Distribution** — donut chart
+- **Created vs Resolved Trend** — monthly bar chart
+- **Priority SLA** — avg resolution time by priority
+- **Assignee Breakdown** — sortable table with overdue/stale highlights
+- **Reporter Breakdown** — sortable table
+- **Reporter → Assignee Flow** — top 20 combinations
+- **Staleness Report** — filterable, colour-coded table
+- **Duration Metrics** — resolution by type + age distribution
+- **Top 10 Oldest Open Tickets**
+- **Full Ticket Table** — search, sort, paginate
 
-### Created vs Resolved Trend
-Monthly grouped bar chart showing tickets created (blue) vs resolved (green). Reveals whether the backlog is growing or shrinking over time.
+### Jira-Only Sections
 
-### Epic Progress
-Sortable table showing per-epic metrics: total tickets, open/closed split, percentage done (with progress bar), and total story points. Gracefully hidden if no epic data is present.
+- **Epic Progress** — sortable table with progress bars and story points
+- **Sprint Progress** — same layout as epic progress
+- **Component Breakdown** — bar chart
+- **Label Breakdown** — bar chart
+- **Estimation Accuracy** — estimated vs actual time by issue type
 
-### Sprint Progress
-Same layout as epic progress — per-sprint breakdown with progress bars and story point totals.
+### ServiceNow-Only Sections
 
-### Assignee Breakdown
-Sortable table showing per-assignee metrics: total tickets, open/closed split, average age of open tickets, overdue count, stale count, and story points. Overdue and stale cells are highlighted in red/amber.
-
-### Reporter Breakdown
-Sortable table showing per-reporter metrics: total tickets, open/closed split, and overdue count.
-
-### Reporter → Assignee Flow
-Table of the top 20 reporter-assignee combinations by ticket count. Shows who creates work for whom.
-
-### Priority SLA
-Bar chart showing average resolution time (days) per priority level. Answers the question: "Are critical tickets being resolved faster?"
-
-### Estimation Accuracy
-Table comparing estimated vs actual time by issue type, with accuracy percentage. Colour-coded: green (within 20%), amber (20–50% off), red (>50% off). Uses Original Estimate and Time Spent fields.
-
-### Staleness Report
-Sortable, filterable table of all open tickets with key, summary, reporter, assignee, status, last activity date, days since activity, and comment preview. Rows are colour-coded: red (>30 days), amber (>stale threshold), green (recent activity). Filter dropdowns for Key, Status, Reporter, and Assignee.
-
-### Duration Metrics
-- Average time to resolution broken down by issue type
-- Age distribution of open tickets (histogram buckets: <7d, 7–14d, 14–30d, 30–60d, 60–90d, 90d+)
-
-### Top 10 Oldest Open Tickets
-Quick view of the longest-running open tickets.
-
-### Full Ticket Table
-All tickets with search, clickable column sorting, and pagination (50 per page).
+- **Category Breakdown** — bar chart of ticket counts by category
+- **Assignment Group Breakdown** — sortable table with SLA % per group
+- **Contact Type Distribution** — donut chart
+- **Escalation Analysis** — donut chart
+- **SLA Compliance by Priority** — stacked bar chart (met/missed per priority)
 
 ### Theme Toggle
+
 Dark theme (default) and light theme, toggled via the button in the header.
 
 ## Supported CSV Formats
 
-The tool normalises column names automatically. These all work:
+### Jira Column Mapping
 
 | Field | Recognised Column Names |
 |-------|------------------------|
@@ -135,12 +150,35 @@ The tool normalises column names automatically. These all work:
 | Labels | `Labels`, `Label` |
 | Original Estimate | `Original Estimate`, `Time Original Estimate` |
 | Time Spent | `Time Spent` |
-| Remaining Estimate | `Remaining Estimate`, `Time Remaining Estimate` |
 | Fix Version/s | `Fix Version/s`, `Fix Versions` |
 
-Date formats are auto-detected: `15/Jan/24 09:30 AM`, `2024-01-15T14:30:00`, `15/01/2024`, and more.
+### ServiceNow Column Mapping
 
-Duration formats are auto-detected: `1w 2d 3h 30m`, plain seconds, etc.
+| Field | Recognised Column Names |
+|-------|------------------------|
+| Key | `Number`, `Task Number` |
+| Summary | `Short description` |
+| Status | `State`, `Status`, `Incident State` |
+| Assignee | `Assigned to` |
+| Reporter | `Opened by`, `Caller`, `Requested by` |
+| Priority | `Priority` |
+| Type | `Type`, `Task type`, `Category`, `sys_class_name` |
+| Created | `Opened at`, `sys_created_on` |
+| Updated | `Updated at`, `sys_updated_on` |
+| Resolved | `Resolved at`, `Closed at` |
+| Category | `Category` |
+| Subcategory | `Subcategory` |
+| Assignment Group | `Assignment group` |
+| Contact Type | `Contact type` |
+| Made SLA | `Made SLA` |
+| Escalation | `Escalation` |
+| Reassignment Count | `Reassignment count` |
+| Reopen Count | `Reopen count` |
+| Impact | `Impact` |
+| Urgency | `Urgency` |
+| Close Notes | `Close notes`, `Resolution notes` |
+
+Date formats are auto-detected: `15/Jan/24 09:30 AM`, `2024-01-15T14:30:00`, `2024-01-15 09:00:00`, `15/01/2024`, and more.
 
 ## Running Tests
 
@@ -148,4 +186,4 @@ Duration formats are auto-detected: `1w 2d 3h 30m`, plain seconds, etc.
 python3 test_jira_dashboard.py
 ```
 
-92 tests covering CSV parsing, date/duration parsing, column normalisation, metrics computation (including new enhancement metrics), HTML generation, and end-to-end CLI pipeline.
+127 tests covering CSV parsing, date/duration parsing, column normalisation, auto-detection, Jira metrics, ServiceNow metrics, HTML generation (both sources), backwards compatibility, and end-to-end CLI pipelines.

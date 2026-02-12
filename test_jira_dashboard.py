@@ -15,12 +15,19 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from jira_dashboard import (
+    COLUMN_ALIASES,
     JiraTicket,
+    SourceConfig,
+    Ticket,
     _build_alias_lookup,
+    _detect_source,
     _extract_comments,
     _find_comment_columns,
     _is_blocked,
     _is_open,
+    _jira_config,
+    _parse_csv,
+    _servicenow_config,
     _split_csv_field,
     compute_dashboard_data,
     format_duration,
@@ -913,6 +920,417 @@ class TestCommentExtraction(unittest.TestCase):
         date, text = _extract_comments(row, comment_cols)
         self.assertIsNone(date)
         self.assertEqual(text, "")
+
+
+class TestAutoDetect(unittest.TestCase):
+    """Tests for _detect_source auto-detection."""
+
+    def test_jira_headers(self):
+        headers = ["Issue key", "Summary", "Status", "Sprint", "Epic Link", "Story Points"]
+        self.assertEqual(_detect_source(headers), "jira")
+
+    def test_servicenow_headers(self):
+        headers = ["Number", "Short description", "State", "Opened at",
+                   "Assignment group", "Made SLA", "Contact type"]
+        self.assertEqual(_detect_source(headers), "servicenow")
+
+    def test_ambiguous_defaults_jira(self):
+        headers = ["Key", "Summary", "Status", "Priority"]
+        self.assertEqual(_detect_source(headers), "jira")
+
+    def test_custom_field_boosts_jira(self):
+        headers = ["Number", "Summary", "Status", "Custom field (Story Points)"]
+        self.assertEqual(_detect_source(headers), "jira")
+
+    def test_sn_indicators_win(self):
+        headers = ["Number", "Short description", "State", "Opened at",
+                   "Assignment group", "Made SLA", "Reassignment count",
+                   "Configuration item"]
+        self.assertEqual(_detect_source(headers), "servicenow")
+
+
+class TestServiceNowParsing(unittest.TestCase):
+    """Tests for parsing ServiceNow CSV exports."""
+
+    def _write_csv(self, tmpdir, rows, filename="sn_test.csv"):
+        path = os.path.join(tmpdir, filename)
+        with open(path, "w", encoding="utf-8", newline="") as f:
+            writer = csv.writer(f)
+            for row in rows:
+                writer.writerow(row)
+        return path
+
+    def test_basic_sn_csv(self):
+        config = _servicenow_config()
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_csv(td, [
+                ["Number", "Short description", "State", "Assigned to",
+                 "Priority", "Opened at", "Category", "Assignment group",
+                 "Made SLA", "Reassignment count", "Reopen count"],
+                ["INC0001", "Server down", "In Progress", "Alice",
+                 "1 - Critical", "2024-01-15 09:00:00", "Hardware", "IT Support",
+                 "true", "2", "0"],
+                ["INC0002", "Password reset", "Closed", "Bob",
+                 "4 - Low", "2024-01-10 10:00:00", "Software", "Help Desk",
+                 "false", "1", "1"],
+            ])
+            tickets = _parse_csv(path, config)
+            self.assertEqual(len(tickets), 2)
+            self.assertEqual(tickets[0].key, "INC0001")
+            self.assertEqual(tickets[0].status, "In Progress")
+            self.assertEqual(tickets[0].category, "Hardware")
+            self.assertEqual(tickets[0].assignment_group, "IT Support")
+            self.assertTrue(tickets[0].made_sla)
+            self.assertEqual(tickets[0].reassignment_count, 2)
+            self.assertEqual(tickets[0].reopen_count, 0)
+            self.assertFalse(tickets[1].made_sla)
+            self.assertEqual(tickets[1].reopen_count, 1)
+
+    def test_sn_status_recognition(self):
+        config = _servicenow_config()
+        self.assertFalse(_is_open("Closed", config))
+        self.assertFalse(_is_open("Resolved", config))
+        self.assertFalse(_is_open("Cancelled", config))
+        self.assertTrue(_is_open("New", config))
+        self.assertTrue(_is_open("In Progress", config))
+        self.assertTrue(_is_open("On Hold", config))
+
+    def test_sn_blocked_recognition(self):
+        config = _servicenow_config()
+        self.assertTrue(_is_blocked("On Hold", config))
+        self.assertTrue(_is_blocked("Pending", config))
+        self.assertFalse(_is_blocked("In Progress", config))
+
+    def test_sn_unassigned_default(self):
+        config = _servicenow_config()
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_csv(td, [
+                ["Number", "Short description", "State"],
+                ["INC0003", "No assignee", "New"],
+            ])
+            tickets = _parse_csv(path, config)
+            self.assertEqual(tickets[0].assignee, "Unassigned")
+
+    def test_sn_dates_parsed(self):
+        config = _servicenow_config()
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_csv(td, [
+                ["Number", "Short description", "State", "Opened at",
+                 "Updated at", "Resolved at"],
+                ["INC0004", "Test dates", "Resolved",
+                 "2024-01-15 09:00:00", "2024-02-01 14:00:00", "2024-02-01 14:00:00"],
+            ])
+            tickets = _parse_csv(path, config)
+            self.assertIsNotNone(tickets[0].created)
+            self.assertIsNotNone(tickets[0].updated)
+            self.assertIsNotNone(tickets[0].resolved)
+
+
+class TestServiceNowMetrics(unittest.TestCase):
+    """Tests for ServiceNow-specific metric computations."""
+
+    def _make_sn_ticket(self, key="INC0001", status="New", created_days_ago=10,
+                         resolved_days_ago=None, priority="3 - Moderate",
+                         assignee="Alice", category="Software",
+                         assignment_group="Help Desk", made_sla=None,
+                         reassignment_count=None, reopen_count=None,
+                         contact_type="", escalation=""):
+        now = datetime(2024, 6, 15)
+        t = JiraTicket()
+        t.key = key
+        t.summary = f"Ticket {key}"
+        t.status = status
+        t.assignee = assignee
+        t.priority = priority
+        t.issue_type = "Incident"
+        t.created = now - timedelta(days=created_days_ago)
+        if resolved_days_ago is not None:
+            t.resolved = now - timedelta(days=resolved_days_ago)
+        t.category = category
+        t.assignment_group = assignment_group
+        t.made_sla = made_sla
+        t.reassignment_count = reassignment_count
+        t.reopen_count = reopen_count
+        t.contact_type = contact_type
+        t.escalation = escalation
+        return t
+
+    def test_sla_compliance(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", "Closed", made_sla=True),
+            self._make_sn_ticket("INC0002", "Closed", made_sla=True),
+            self._make_sn_ticket("INC0003", "Closed", made_sla=False),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertEqual(data.sla_met_count, 2)
+        self.assertEqual(data.sla_missed_count, 1)
+        self.assertAlmostEqual(data.sla_compliance_pct, 66.7)
+
+    def test_category_counts(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", category="Software"),
+            self._make_sn_ticket("INC0002", category="Software"),
+            self._make_sn_ticket("INC0003", category="Hardware"),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertEqual(data.category_counts["Software"], 2)
+        self.assertEqual(data.category_counts["Hardware"], 1)
+
+    def test_assignment_group_counts(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", assignment_group="Help Desk"),
+            self._make_sn_ticket("INC0002", assignment_group="Help Desk"),
+            self._make_sn_ticket("INC0003", assignment_group="IT Support"),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertEqual(data.assignment_group_counts["Help Desk"], 2)
+        self.assertEqual(data.assignment_group_counts["IT Support"], 1)
+
+    def test_assignment_group_breakdown(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", "New", assignment_group="Help Desk", made_sla=True),
+            self._make_sn_ticket("INC0002", "Closed", assignment_group="Help Desk", made_sla=False),
+            self._make_sn_ticket("INC0003", "Closed", assignment_group="IT Support", made_sla=True),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        by_group = {r["group"]: r for r in data.assignment_group_breakdown}
+        self.assertIn("Help Desk", by_group)
+        self.assertEqual(by_group["Help Desk"]["total"], 2)
+        self.assertEqual(by_group["Help Desk"]["open"], 1)
+        self.assertEqual(by_group["Help Desk"]["closed"], 1)
+        self.assertAlmostEqual(by_group["Help Desk"]["sla_pct"], 50.0)
+
+    def test_escalation_counts(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", escalation="Normal"),
+            self._make_sn_ticket("INC0002", escalation="Normal"),
+            self._make_sn_ticket("INC0003", escalation="Overdue"),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertEqual(data.escalation_counts["Normal"], 2)
+        self.assertEqual(data.escalation_counts["Overdue"], 1)
+
+    def test_reassignment_and_reopen(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", reassignment_count=2, reopen_count=1),
+            self._make_sn_ticket("INC0002", reassignment_count=4, reopen_count=0),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertAlmostEqual(data.avg_reassignment_count, 3.0)
+        self.assertAlmostEqual(data.avg_reopen_count, 0.5)
+
+    def test_contact_type_counts(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", contact_type="Phone"),
+            self._make_sn_ticket("INC0002", contact_type="Email"),
+            self._make_sn_ticket("INC0003", contact_type="Phone"),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertEqual(data.contact_type_counts["Phone"], 2)
+        self.assertEqual(data.contact_type_counts["Email"], 1)
+
+    def test_sla_by_priority(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        tickets = [
+            self._make_sn_ticket("INC0001", priority="1 - Critical", made_sla=True),
+            self._make_sn_ticket("INC0002", priority="1 - Critical", made_sla=False),
+            self._make_sn_ticket("INC0003", priority="4 - Low", made_sla=True),
+        ]
+        data = compute_dashboard_data(tickets, now=now, config=config)
+        self.assertIn("1 - Critical", data.sla_by_priority)
+        self.assertEqual(data.sla_by_priority["1 - Critical"]["met"], 1)
+        self.assertEqual(data.sla_by_priority["1 - Critical"]["missed"], 1)
+        self.assertEqual(data.sla_by_priority["4 - Low"]["met"], 1)
+
+    def test_source_type_set(self):
+        now = datetime(2024, 6, 15)
+        config = _servicenow_config()
+        data = compute_dashboard_data([], now=now, config=config)
+        self.assertEqual(data.source_type, "servicenow")
+
+
+class TestServiceNowHTML(unittest.TestCase):
+    """Tests that SN-specific HTML sections appear and Jira sections are absent."""
+
+    def _make_sn_ticket(self, key="INC0001", status="New"):
+        t = JiraTicket(key=key, summary="Test SN", status=status,
+                       priority="3 - Moderate", issue_type="Incident")
+        t.created = datetime(2024, 1, 15)
+        t.category = "Software"
+        t.assignment_group = "Help Desk"
+        t.made_sla = True
+        t.contact_type = "Phone"
+        t.escalation = "Normal"
+        return t
+
+    def test_sn_sections_present(self):
+        config = _servicenow_config()
+        tickets = [self._make_sn_ticket()]
+        data = compute_dashboard_data(tickets, config=config)
+        html_out = generate_html(tickets, data, config=config)
+        self.assertIn("Category Breakdown", html_out)
+        self.assertIn("Assignment Group Breakdown", html_out)
+        self.assertIn("Contact Type Distribution", html_out)
+        self.assertIn("Escalation Analysis", html_out)
+        self.assertIn("SLA Compliance by Priority", html_out)
+        self.assertIn("SLA Compliance", html_out)
+
+    def test_jira_sections_absent_in_sn(self):
+        config = _servicenow_config()
+        tickets = [self._make_sn_ticket()]
+        data = compute_dashboard_data(tickets, config=config)
+        html_out = generate_html(tickets, data, config=config)
+        self.assertNotIn("Epic Progress", html_out)
+        self.assertNotIn("Sprint Progress", html_out)
+        self.assertNotIn("Estimation Accuracy", html_out)
+        self.assertNotIn("Components", html_out)
+
+    def test_sn_eighth_card_is_sla(self):
+        config = _servicenow_config()
+        tickets = [self._make_sn_ticket()]
+        data = compute_dashboard_data(tickets, config=config)
+        html_out = generate_html(tickets, data, config=config)
+        self.assertIn("SLA Compliance", html_out)
+        self.assertNotIn("Story Points", html_out)
+
+    def test_sn_extra_cards_present(self):
+        config = _servicenow_config()
+        tickets = [self._make_sn_ticket()]
+        data = compute_dashboard_data(tickets, config=config)
+        html_out = generate_html(tickets, data, config=config)
+        self.assertIn("Avg Reassignments", html_out)
+        self.assertIn("Avg Reopens", html_out)
+
+
+class TestBackwardsCompat(unittest.TestCase):
+    """Tests that backwards-compat aliases still work."""
+
+    def test_jiraticket_alias(self):
+        # JiraTicket should still be importable and usable
+        t = JiraTicket(key="T-1", summary="Test")
+        self.assertEqual(t.key, "T-1")
+
+    def test_ticket_alias(self):
+        # Ticket should be an alias for JiraTicket
+        t = Ticket(key="T-2", summary="Test2")
+        self.assertIsInstance(t, JiraTicket)
+
+    def test_parse_jira_csv_still_works(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "test.csv")
+            with open(path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Issue key", "Summary", "Status"])
+                writer.writerow(["BC-1", "Compat test", "Open"])
+            tickets = parse_jira_csv(path)
+            self.assertEqual(len(tickets), 1)
+            self.assertEqual(tickets[0].key, "BC-1")
+
+    def test_column_aliases_still_accessible(self):
+        self.assertIn("key", COLUMN_ALIASES)
+        self.assertIn("summary", COLUMN_ALIASES)
+
+    def test_build_alias_lookup_no_config(self):
+        headers = ["Issue key", "Summary", "Status"]
+        lookup = _build_alias_lookup(headers)
+        self.assertEqual(lookup["key"], [0])
+
+
+class TestServiceNowEndToEnd(unittest.TestCase):
+    """End-to-end test for ServiceNow CSV pipeline."""
+
+    def test_full_sn_pipeline(self):
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = os.path.join(td, "sn_export.csv")
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Number", "Short description", "State",
+                                 "Assigned to", "Priority", "Opened at",
+                                 "Resolved at", "Category", "Assignment group",
+                                 "Made SLA", "Contact type", "Escalation",
+                                 "Reassignment count", "Reopen count", "Opened by"])
+                writer.writerow(["INC0001", "Server down", "In Progress",
+                                 "Alice", "1 - Critical", "2024-01-15",
+                                 "", "Hardware", "IT Support",
+                                 "true", "Phone", "Normal", "2", "0", "Carol"])
+                writer.writerow(["INC0002", "Password reset", "Closed",
+                                 "Bob", "4 - Low", "2024-01-10",
+                                 "2024-01-11", "Software", "Help Desk",
+                                 "false", "Email", "Normal", "1", "1", "Dave"])
+
+            output_path = os.path.join(td, "sn_output.html")
+            result = main(["--source", "servicenow", "-o", output_path, csv_path])
+            self.assertEqual(result, 0)
+
+            html_content = Path(output_path).read_text()
+            self.assertIn("<!DOCTYPE html>", html_content)
+            self.assertIn("INC0001", html_content)
+            self.assertIn("Category Breakdown", html_content)
+            self.assertNotIn("Epic Progress", html_content)
+
+    def test_auto_detect_sn(self):
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = os.path.join(td, "auto.csv")
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Number", "Short description", "State",
+                                 "Opened at", "Assignment group", "Made SLA"])
+                writer.writerow(["INC0001", "Auto test", "New",
+                                 "2024-01-15", "Help Desk", "true"])
+
+            output_path = os.path.join(td, "auto_output.html")
+            result = main(["-o", output_path, csv_path])
+            self.assertEqual(result, 0)
+
+            html_content = Path(output_path).read_text()
+            self.assertIn("SLA Compliance", html_content)
+
+    def test_sn_auto_title(self):
+        from jira_dashboard import _auto_title
+        config = _servicenow_config()
+        tickets = [
+            JiraTicket(key="INC0001"),
+            JiraTicket(key="INC0002"),
+            JiraTicket(key="CHG0001"),
+        ]
+        title = _auto_title(tickets, None, config)
+        self.assertIn("Incident", title)
+
+    def test_sn_auto_title_no_tickets(self):
+        from jira_dashboard import _auto_title
+        config = _servicenow_config()
+        title = _auto_title([], None, config)
+        self.assertEqual(title, "ServiceNow Dashboard")
+
+    def test_source_flag_jira(self):
+        with tempfile.TemporaryDirectory() as td:
+            csv_path = os.path.join(td, "jira.csv")
+            with open(csv_path, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["Issue key", "Summary", "Status"])
+                writer.writerow(["PROJ-1", "Test", "Open"])
+
+            output_path = os.path.join(td, "jira_out.html")
+            result = main(["--source", "jira", "-o", output_path, csv_path])
+            self.assertEqual(result, 0)
+
+            html_content = Path(output_path).read_text()
+            self.assertIn("Story Points", html_content)
 
 
 if __name__ == "__main__":

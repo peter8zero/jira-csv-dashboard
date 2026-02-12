@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Jira CSV Dashboard Generator.
+"""Jira / ServiceNow CSV Dashboard Generator.
 
-Ingests a Jira CSV export and produces a single self-contained HTML dashboard
-with ticket status, assignee workload, staleness, durations, and more.
+Ingests a Jira or ServiceNow CSV export and produces a single self-contained
+HTML dashboard with ticket status, assignee workload, staleness, durations,
+and more.  Source format is auto-detected from CSV headers, or can be forced
+with ``--source jira|servicenow``.
 
 Usage:
     python3 jira_dashboard.py export.csv
     python3 jira_dashboard.py export.csv -o my_dashboard.html -v
+    python3 jira_dashboard.py export.csv --source servicenow -o sn_dashboard.html
     python3 jira_dashboard.py export.csv --stale-days 7 --title "Sprint 42 Dashboard"
 """
 
@@ -55,7 +58,205 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
 }
 
 
-def _build_alias_lookup(headers: List[str]) -> Dict[str, List[int]]:
+# ---------------------------------------------------------------------------
+# Source configuration
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SourceConfig:
+    """Encapsulates all source-specific knowledge (Jira vs ServiceNow)."""
+    name: str = "jira"
+    display_name: str = "Jira"
+    column_aliases: Dict[str, List[str]] = field(default_factory=dict)
+    open_statuses: set = field(default_factory=set)
+    closed_statuses: set = field(default_factory=set)
+    blocked_statuses: set = field(default_factory=set)
+    status_colours: Dict[str, str] = field(default_factory=dict)
+    priority_colours: Dict[str, str] = field(default_factory=dict)
+    type_colours: Dict[str, str] = field(default_factory=dict)
+    default_unassigned: str = "Unassigned"
+    # Section toggles
+    has_epics: bool = False
+    has_sprints: bool = False
+    has_story_points: bool = False
+    has_estimation: bool = False
+    has_sla: bool = False
+    has_contact_type: bool = False
+    has_escalation: bool = False
+    has_reassignment: bool = False
+    has_categories: bool = False
+    has_assignment_groups: bool = False
+
+
+def _jira_config() -> SourceConfig:
+    """Return a SourceConfig for Jira CSV exports."""
+    return SourceConfig(
+        name="jira",
+        display_name="Jira",
+        column_aliases=dict(COLUMN_ALIASES),
+        open_statuses={"open", "to do", "todo", "in progress", "in review", "reopened",
+                       "backlog", "selected for development", "blocked", "waiting",
+                       "new", "active", "in development", "in testing", "ready for review",
+                       "in uat"},
+        closed_statuses={"done", "closed", "resolved", "complete", "completed", "cancelled",
+                         "won't do", "wontdo", "duplicate", "rejected"},
+        blocked_statuses={"blocked", "waiting", "on hold", "impediment"},
+        status_colours={
+            "To Do": "#8A9499", "Open": "#8A9499", "Backlog": "#8A9499", "New": "#8A9499",
+            "In Progress": "#4A9FD9", "In Review": "#6BB3E3", "In Development": "#4A9FD9",
+            "In Testing": "#6BB3E3", "Active": "#4A9FD9", "In UAT": "#6BB3E3",
+            "Done": "#4CAF50", "Closed": "#4CAF50", "Resolved": "#4CAF50", "Complete": "#4CAF50",
+            "Blocked": "#F44336", "Waiting": "#FF9800", "Reopened": "#FF9800",
+        },
+        priority_colours={
+            "Critical": "#F44336", "Highest": "#F44336", "Blocker": "#F44336",
+            "High": "#FF9800", "Major": "#FF9800",
+            "Medium": "#FFD54F", "Normal": "#FFD54F",
+            "Low": "#4CAF50", "Minor": "#4CAF50",
+            "Lowest": "#8A9499", "Trivial": "#8A9499",
+        },
+        type_colours={
+            "Bug": "#F44336", "Defect": "#F44336",
+            "Story": "#4A9FD9", "User Story": "#4A9FD9",
+            "Task": "#8A9499", "Sub-task": "#6BB3E3",
+            "Epic": "#9C27B0", "Initiative": "#9C27B0",
+            "Improvement": "#FF9800", "New Feature": "#4CAF50",
+        },
+        default_unassigned="Unassigned",
+        has_epics=True,
+        has_sprints=True,
+        has_story_points=True,
+        has_estimation=True,
+        has_sla=False,
+        has_contact_type=False,
+        has_escalation=False,
+        has_reassignment=False,
+        has_categories=False,
+        has_assignment_groups=False,
+    )
+
+
+_SERVICENOW_ALIASES: Dict[str, List[str]] = {
+    "key": ["number", "task number", "ticket number"],
+    "summary": ["short description", "short_description", "description"],
+    "status": ["state", "status", "incident state"],
+    "assignee": ["assigned to", "assigned_to", "assignee"],
+    "reporter": ["opened by", "opened_by", "caller", "caller id", "requested by"],
+    "priority": ["priority"],
+    "issue_type": ["type", "task type", "category", "sys_class_name"],
+    "created": ["opened at", "opened_at", "sys_created_on", "created"],
+    "updated": ["updated at", "updated_at", "sys_updated_on", "updated"],
+    "resolved": ["resolved at", "resolved_at", "closed at", "closed_at"],
+    "due_date": ["due date", "due_date", "expected start"],
+    "labels": [],
+    "components": [],
+    "fix_versions": [],
+    "resolution": ["close code", "close_code", "resolution code"],
+    "story_points": [],
+    "original_estimate": [],
+    "time_spent": ["time worked", "time_worked", "business duration"],
+    "remaining_estimate": [],
+    "epic_link": [],
+    "sprint": [],
+    "project": ["company", "department"],
+    "parent": ["parent", "parent incident"],
+    # ServiceNow-specific fields
+    "category": ["category"],
+    "subcategory": ["subcategory", "sub_category"],
+    "assignment_group": ["assignment group", "assignment_group"],
+    "contact_type": ["contact type", "contact_type"],
+    "impact": ["impact"],
+    "urgency": ["urgency"],
+    "made_sla": ["made sla", "made_sla"],
+    "business_duration": ["business duration", "business_duration"],
+    "escalation": ["escalation"],
+    "reassignment_count": ["reassignment count", "reassignment_count"],
+    "reopen_count": ["reopen count", "reopen_count"],
+    "close_notes": ["close notes", "close_notes", "resolution notes"],
+    "closed_at": ["closed at", "closed_at"],
+    "severity": ["severity"],
+    "active": ["active"],
+    "configuration_item": ["configuration item", "cmdb_ci", "ci"],
+}
+
+
+def _servicenow_config() -> SourceConfig:
+    """Return a SourceConfig for ServiceNow CSV exports."""
+    return SourceConfig(
+        name="servicenow",
+        display_name="ServiceNow",
+        column_aliases=dict(_SERVICENOW_ALIASES),
+        open_statuses={"new", "in progress", "on hold", "open", "work in progress",
+                       "assess", "authorize", "scheduled", "implement", "review",
+                       "assessed", "root cause analysis", "fix in progress",
+                       "1", "2", "3"},
+        closed_statuses={"resolved", "closed", "cancelled", "closed complete",
+                         "closed incomplete", "closed skipped",
+                         "6", "7", "8"},
+        blocked_statuses={"on hold", "pending"},
+        status_colours={
+            "New": "#8A9499", "Open": "#8A9499",
+            "In Progress": "#4A9FD9", "Work in Progress": "#4A9FD9",
+            "Assess": "#6BB3E3", "Authorize": "#6BB3E3",
+            "Scheduled": "#00BCD4", "Implement": "#4A9FD9",
+            "Review": "#6BB3E3", "Fix in Progress": "#4A9FD9",
+            "On Hold": "#FF9800", "Pending": "#FF9800",
+            "Resolved": "#4CAF50", "Closed": "#4CAF50",
+            "Closed Complete": "#4CAF50", "Closed Incomplete": "#8A9499",
+            "Closed Skipped": "#8A9499", "Cancelled": "#607D8B",
+        },
+        priority_colours={
+            "1 - Critical": "#F44336", "1": "#F44336", "Critical": "#F44336",
+            "2 - High": "#FF9800", "2": "#FF9800", "High": "#FF9800",
+            "3 - Moderate": "#FFD54F", "3": "#FFD54F", "Moderate": "#FFD54F",
+            "4 - Low": "#4CAF50", "4": "#4CAF50", "Low": "#4CAF50",
+            "5 - Planning": "#8A9499", "5": "#8A9499", "Planning": "#8A9499",
+        },
+        type_colours={
+            "Incident": "#F44336", "Problem": "#FF9800",
+            "Change": "#4A9FD9", "Request": "#4CAF50",
+            "Task": "#8A9499", "Catalog Task": "#6BB3E3",
+        },
+        default_unassigned="Unassigned",
+        has_epics=False,
+        has_sprints=False,
+        has_story_points=False,
+        has_estimation=False,
+        has_sla=True,
+        has_contact_type=True,
+        has_escalation=True,
+        has_reassignment=True,
+        has_categories=True,
+        has_assignment_groups=True,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Auto-detection
+# ---------------------------------------------------------------------------
+
+def _detect_source(headers: List[str]) -> str:
+    """Score headers to determine whether CSV is Jira or ServiceNow.
+
+    Returns ``"jira"`` or ``"servicenow"``.
+    """
+    lower = {h.strip().lower() for h in headers}
+
+    jira_indicators = {"issue key", "sprint", "epic link", "story points",
+                       "issue type", "issuetype", "fix version/s"}
+    sn_indicators = {"number", "opened at", "assignment group", "made sla",
+                     "short description", "configuration item", "contact type",
+                     "opened by", "resolved at", "reassignment count"}
+
+    # Also check for Custom field(...) wrapper — very Jira-specific
+    jira_score = sum(1 for ind in jira_indicators if ind in lower)
+    jira_score += sum(1 for h in lower if h.startswith("custom field"))
+    sn_score = sum(1 for ind in sn_indicators if ind in lower)
+
+    return "servicenow" if sn_score > jira_score else "jira"
+
+
+def _build_alias_lookup(headers: List[str], aliases: Optional[Dict[str, List[str]]] = None) -> Dict[str, List[int]]:
     """Build a mapping from canonical field name to candidate column indices.
 
     Returns a *list* of indices per field because Jira CSV exports often
@@ -67,6 +268,8 @@ def _build_alias_lookup(headers: List[str]) -> Dict[str, List[int]]:
     Also handles Jira's ``Custom field (Name)`` wrapper — e.g. a header of
     ``Custom field (Story Points)`` will match the alias ``story points``.
     """
+    if aliases is None:
+        aliases = COLUMN_ALIASES
     lower_headers = [h.strip().lower() for h in headers]
     # Also build a version that strips the "custom field (...)" wrapper
     _cf_re = re.compile(r"^custom\s+field\s*\((.+)\)$")
@@ -76,10 +279,10 @@ def _build_alias_lookup(headers: List[str]) -> Dict[str, List[int]]:
         unwrapped.append(m.group(1).strip() if m else h)
 
     lookup: Dict[str, List[int]] = {}
-    for canonical, aliases in COLUMN_ALIASES.items():
+    for canonical, alias_list in aliases.items():
         indices: List[int] = []
         seen: set = set()
-        for alias in aliases:
+        for alias in alias_list:
             # Collect ALL matching columns for each alias
             for i, (lh, uw) in enumerate(zip(lower_headers, unwrapped)):
                 if i not in seen and (lh == alias or uw == alias):
@@ -225,11 +428,65 @@ class JiraTicket:
     last_comment_date: Optional[datetime] = None
     last_comment_text: str = ""
     raw_fields: Dict[str, str] = field(default_factory=dict)
+    # ServiceNow-specific fields (harmless defaults when unused)
+    category: str = ""
+    subcategory: str = ""
+    assignment_group: str = ""
+    contact_type: str = ""
+    impact: str = ""
+    urgency: str = ""
+    made_sla: Optional[bool] = None
+    business_duration_secs: Optional[int] = None
+    escalation: str = ""
+    reassignment_count: Optional[int] = None
+    reopen_count: Optional[int] = None
+    close_notes: str = ""
+    closed_at: Optional[datetime] = None
+    severity: str = ""
+    active: str = ""
+
+
+# Backwards-compat alias
+Ticket = JiraTicket
 
 
 # ---------------------------------------------------------------------------
 # CSV Parsing
 # ---------------------------------------------------------------------------
+
+def _extract_sn_work_notes(row: List[str], comment_cols: List[int]) -> Tuple[Optional[datetime], str]:
+    """Extract latest comment date and text from ServiceNow work notes columns.
+
+    ServiceNow work notes format:  ``YYYY-MM-DD HH:MM:SS - Author\\nText``
+    or plain text.
+    """
+    latest_date: Optional[datetime] = None
+    latest_text = ""
+    sn_note_re = re.compile(r"^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2})\s*-\s*(.+)")
+    for ci in comment_cols:
+        if ci >= len(row):
+            continue
+        val = row[ci].strip()
+        if not val:
+            continue
+        # Try SN format first
+        m = sn_note_re.match(val)
+        if m:
+            d = parse_date(m.group(1))
+            text = val[m.end():].strip().lstrip("-").strip()
+            if not text:
+                text = val
+        else:
+            d = None
+            text = val
+        if d is not None:
+            if latest_date is None or d > latest_date:
+                latest_date = d
+                latest_text = text
+        elif not latest_text:
+            latest_text = text
+    return latest_date, latest_text
+
 
 def _extract_comments(row: List[str], comment_cols: List[int]) -> Tuple[Optional[datetime], str]:
     """Extract latest comment date and text from comment columns."""
@@ -263,8 +520,18 @@ def _extract_comments(row: List[str], comment_cols: List[int]) -> Tuple[Optional
     return latest_date, latest_text
 
 
-def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
-    """Parse a Jira CSV export into a list of JiraTicket objects."""
+def _find_work_notes_columns(headers: List[str]) -> List[int]:
+    """Find ServiceNow work notes / additional comments columns."""
+    indices = []
+    for i, h in enumerate(headers):
+        hl = h.strip().lower()
+        if "work notes" in hl or "additional comments" in hl or "comment" in hl:
+            indices.append(i)
+    return indices
+
+
+def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> List[JiraTicket]:
+    """Parse a CSV export into a list of JiraTicket objects using the given config."""
     path = Path(filepath)
     content = path.read_text(encoding="utf-8-sig")
     reader = csv.reader(io.StringIO(content))
@@ -273,8 +540,12 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
     except StopIteration:
         return []
 
-    lookup = _build_alias_lookup(headers)
-    comment_cols = _find_comment_columns(headers)
+    lookup = _build_alias_lookup(headers, config.column_aliases)
+    is_sn = config.name == "servicenow"
+    if is_sn:
+        comment_cols = _find_work_notes_columns(headers)
+    else:
+        comment_cols = _find_comment_columns(headers)
     tickets: List[JiraTicket] = []
 
     def _get(row: List[str], canonical: str) -> str:
@@ -291,7 +562,7 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
         t.key = _get(row, "key")
         t.summary = _get(row, "summary")
         t.status = _get(row, "status")
-        t.assignee = _get(row, "assignee") or "Unassigned"
+        t.assignee = _get(row, "assignee") or config.default_unassigned
         t.reporter = _get(row, "reporter")
         t.priority = _get(row, "priority")
         t.issue_type = _get(row, "issue_type")
@@ -318,7 +589,44 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
         t.original_estimate_secs = parse_duration_seconds(_get(row, "original_estimate"))
         t.time_spent_secs = parse_duration_seconds(_get(row, "time_spent"))
         t.remaining_estimate_secs = parse_duration_seconds(_get(row, "remaining_estimate"))
-        t.last_comment_date, t.last_comment_text = _extract_comments(row, comment_cols)
+
+        if is_sn:
+            t.last_comment_date, t.last_comment_text = _extract_sn_work_notes(row, comment_cols)
+            # ServiceNow-specific fields
+            t.category = _get(row, "category")
+            t.subcategory = _get(row, "subcategory")
+            t.assignment_group = _get(row, "assignment_group")
+            t.contact_type = _get(row, "contact_type")
+            t.impact = _get(row, "impact")
+            t.urgency = _get(row, "urgency")
+            t.escalation = _get(row, "escalation")
+            t.close_notes = _get(row, "close_notes")
+            t.closed_at = parse_date(_get(row, "closed_at"))
+            t.severity = _get(row, "severity")
+            t.active = _get(row, "active")
+            # Boolean / numeric SN fields
+            sla_val = _get(row, "made_sla").lower()
+            if sla_val in ("true", "1", "yes"):
+                t.made_sla = True
+            elif sla_val in ("false", "0", "no"):
+                t.made_sla = False
+            bd = _get(row, "business_duration")
+            if bd:
+                t.business_duration_secs = parse_duration_seconds(bd)
+            rc = _get(row, "reassignment_count")
+            if rc:
+                try:
+                    t.reassignment_count = int(float(rc))
+                except ValueError:
+                    pass
+            roc = _get(row, "reopen_count")
+            if roc:
+                try:
+                    t.reopen_count = int(float(roc))
+                except ValueError:
+                    pass
+        else:
+            t.last_comment_date, t.last_comment_text = _extract_comments(row, comment_cols)
 
         for i, h in enumerate(headers):
             if i < len(row):
@@ -327,11 +635,21 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
         tickets.append(t)
 
     if verbose:
-        print(f"Parsed {len(tickets)} tickets from {filepath}")
+        print(f"Parsed {len(tickets)} tickets from {filepath} (source: {config.display_name})")
         print(f"  Columns found: {', '.join(c for c, indices in lookup.items() if indices)}")
         print(f"  Comment columns: {len(comment_cols)}")
 
     return tickets
+
+
+def parse_jira_csv(filepath: str, verbose: bool = False, config: Optional[SourceConfig] = None) -> List[JiraTicket]:
+    """Parse a Jira CSV export into a list of JiraTicket objects.
+
+    Backwards-compatible wrapper around ``_parse_csv``.
+    """
+    if config is None:
+        config = _jira_config()
+    return _parse_csv(filepath, config, verbose=verbose)
 
 
 # ---------------------------------------------------------------------------
@@ -347,17 +665,20 @@ _CLOSED_STATUSES = {"done", "closed", "resolved", "complete", "completed", "canc
 _BLOCKED_STATUSES = {"blocked", "waiting", "on hold", "impediment"}
 
 
-def _is_open(status: str) -> bool:
+def _is_open(status: str, config: Optional[SourceConfig] = None) -> bool:
     sl = status.strip().lower()
-    if sl in _CLOSED_STATUSES:
+    closed = config.closed_statuses if config else _CLOSED_STATUSES
+    open_s = config.open_statuses if config else _OPEN_STATUSES
+    if sl in closed:
         return False
-    if sl in _OPEN_STATUSES:
+    if sl in open_s:
         return True
     return True
 
 
-def _is_blocked(status: str) -> bool:
-    return status.strip().lower() in _BLOCKED_STATUSES
+def _is_blocked(status: str, config: Optional[SourceConfig] = None) -> bool:
+    blocked = config.blocked_statuses if config else _BLOCKED_STATUSES
+    return status.strip().lower() in blocked
 
 
 def _split_csv_field(value: str) -> List[str]:
@@ -417,14 +738,35 @@ class DashboardData:
     all_tickets_json: str = "[]"
     all_headers: List[str] = field(default_factory=list)
 
+    # Source type
+    source_type: str = "jira"
+
+    # ServiceNow-specific metrics
+    sla_compliance_pct: float = 0.0
+    sla_met_count: int = 0
+    sla_missed_count: int = 0
+    contact_type_counts: Dict[str, int] = field(default_factory=dict)
+    category_counts: Dict[str, int] = field(default_factory=dict)
+    subcategory_counts: Dict[str, int] = field(default_factory=dict)
+    assignment_group_counts: Dict[str, int] = field(default_factory=dict)
+    assignment_group_breakdown: List[Dict[str, Any]] = field(default_factory=list)
+    escalation_counts: Dict[str, int] = field(default_factory=dict)
+    avg_reassignment_count: float = 0.0
+    avg_reopen_count: float = 0.0
+    sla_by_priority: Dict[str, Dict[str, int]] = field(default_factory=dict)
+
 
 def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
-                           now: Optional[datetime] = None) -> DashboardData:
+                           now: Optional[datetime] = None,
+                           config: Optional[SourceConfig] = None) -> DashboardData:
     """Compute all dashboard metrics from parsed tickets."""
     if now is None:
         now = datetime.now()
+    if config is None:
+        config = _jira_config()
 
     d = DashboardData()
+    d.source_type = config.name
     d.total_tickets = len(tickets)
 
     open_ages: List[float] = []
@@ -454,19 +796,36 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
     component_counter: Dict[str, int] = defaultdict(int)
     label_counter: Dict[str, int] = defaultdict(int)
 
+    # ServiceNow-specific accumulators
+    sla_met = 0
+    sla_missed = 0
+    category_counter: Dict[str, int] = defaultdict(int)
+    subcategory_counter: Dict[str, int] = defaultdict(int)
+    assignment_group_counter: Dict[str, int] = defaultdict(int)
+    contact_type_counter: Dict[str, int] = defaultdict(int)
+    escalation_counter: Dict[str, int] = defaultdict(int)
+    reassignment_values: List[int] = []
+    reopen_values: List[int] = []
+    sla_by_pri: Dict[str, Dict[str, int]] = defaultdict(lambda: {"met": 0, "missed": 0})
+
+    # Assignment group stats (for breakdown table)
+    ag_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "total": 0, "open": 0, "closed": 0, "sla_met": 0, "sla_missed": 0,
+    })
+
     for t in tickets:
-        is_open = _is_open(t.status)
+        is_open = _is_open(t.status, config)
         if is_open:
             d.open_tickets += 1
         else:
             d.closed_tickets += 1
 
         # Blocked
-        if is_open and _is_blocked(t.status):
+        if is_open and _is_blocked(t.status, config):
             d.blocked_tickets += 1
 
         # Unassigned
-        if is_open and t.assignee in ("Unassigned", ""):
+        if is_open and t.assignee in (config.default_unassigned, ""):
             d.unassigned_tickets += 1
 
         # Story points
@@ -593,6 +952,46 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
         reporter = t.reporter or "Unknown"
         ra_flow[(reporter, t.assignee)] += 1
 
+        # --- ServiceNow-specific per-ticket ---
+        if config.has_sla and t.made_sla is not None:
+            if t.made_sla:
+                sla_met += 1
+            else:
+                sla_missed += 1
+            pri = t.priority or "Unknown"
+            if t.made_sla:
+                sla_by_pri[pri]["met"] += 1
+            else:
+                sla_by_pri[pri]["missed"] += 1
+
+        if config.has_categories and t.category:
+            category_counter[t.category] += 1
+        if config.has_categories and t.subcategory:
+            subcategory_counter[t.subcategory] += 1
+
+        if config.has_assignment_groups and t.assignment_group:
+            assignment_group_counter[t.assignment_group] += 1
+            ag_stats[t.assignment_group]["total"] += 1
+            if is_open:
+                ag_stats[t.assignment_group]["open"] += 1
+            else:
+                ag_stats[t.assignment_group]["closed"] += 1
+            if t.made_sla is True:
+                ag_stats[t.assignment_group]["sla_met"] += 1
+            elif t.made_sla is False:
+                ag_stats[t.assignment_group]["sla_missed"] += 1
+
+        if config.has_contact_type and t.contact_type:
+            contact_type_counter[t.contact_type] += 1
+
+        if config.has_escalation and t.escalation:
+            escalation_counter[t.escalation] += 1
+
+        if config.has_reassignment and t.reassignment_count is not None:
+            reassignment_values.append(t.reassignment_count)
+        if config.has_reassignment and t.reopen_count is not None:
+            reopen_values.append(t.reopen_count)
+
     # --- Aggregations ---
 
     # Summary values
@@ -629,7 +1028,7 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
     # Top 10 oldest open
     open_with_age = []
     for t in tickets:
-        if _is_open(t.status) and t.created:
+        if _is_open(t.status, config) and t.created:
             age = (now - t.created).total_seconds() / 86400
             open_with_age.append({
                 "key": t.key,
@@ -651,7 +1050,7 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
         "total": 0, "open": 0, "closed": 0, "overdue": 0,
     })
     for t in tickets:
-        is_open_t = _is_open(t.status)
+        is_open_t = _is_open(t.status, config)
         a = t.assignee
         assignee_stats[a]["total"] += 1
         if t.story_points:
@@ -737,6 +1136,39 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
             "reporter": reporter, "assignee": assignee, "count": count,
         })
 
+    # --- ServiceNow-specific aggregations ---
+    if config.has_sla:
+        sla_total = sla_met + sla_missed
+        d.sla_met_count = sla_met
+        d.sla_missed_count = sla_missed
+        d.sla_compliance_pct = round(sla_met / sla_total * 100, 1) if sla_total else 0.0
+        for pri, counts in sorted(sla_by_pri.items()):
+            d.sla_by_priority[pri] = dict(counts)
+
+    if config.has_categories:
+        d.category_counts = dict(sorted(category_counter.items(), key=lambda x: -x[1]))
+        d.subcategory_counts = dict(sorted(subcategory_counter.items(), key=lambda x: -x[1]))
+
+    if config.has_assignment_groups:
+        d.assignment_group_counts = dict(sorted(assignment_group_counter.items(), key=lambda x: -x[1]))
+        for ag_name, s in sorted(ag_stats.items(), key=lambda x: -x[1]["total"]):
+            sla_t = s["sla_met"] + s["sla_missed"]
+            sla_pct = round(s["sla_met"] / sla_t * 100, 1) if sla_t else 0.0
+            d.assignment_group_breakdown.append({
+                "group": ag_name, "total": s["total"], "open": s["open"],
+                "closed": s["closed"], "sla_pct": sla_pct,
+            })
+
+    if config.has_contact_type:
+        d.contact_type_counts = dict(sorted(contact_type_counter.items(), key=lambda x: -x[1]))
+
+    if config.has_escalation:
+        d.escalation_counts = dict(sorted(escalation_counter.items(), key=lambda x: -x[1]))
+
+    if config.has_reassignment:
+        d.avg_reassignment_count = round(sum(reassignment_values) / len(reassignment_values), 1) if reassignment_values else 0.0
+        d.avg_reopen_count = round(sum(reopen_values) / len(reopen_values), 1) if reopen_values else 0.0
+
     # Full ticket table data
     all_rows = []
     all_headers_set: Dict[str, None] = {}
@@ -760,11 +1192,37 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
 # HTML Generation
 # ---------------------------------------------------------------------------
 
-def _auto_title(tickets: List[JiraTicket], user_title: Optional[str]) -> str:
+_SN_PREFIX_MAP = {
+    "INC": "Incident", "CHG": "Change", "REQ": "Request", "PRB": "Problem",
+    "RITM": "Request Item", "TASK": "Task", "SCTASK": "Catalog Task",
+}
+
+
+def _auto_title(tickets: List[JiraTicket], user_title: Optional[str],
+                config: Optional[SourceConfig] = None) -> str:
     if user_title:
         return user_title
     if not tickets:
-        return "Jira Dashboard"
+        default = "Dashboard"
+        if config:
+            default = f"{config.display_name} Dashboard"
+        return default
+
+    if config and config.name == "servicenow":
+        # Detect SN ticket prefixes
+        prefix_counts: Dict[str, int] = defaultdict(int)
+        for t in tickets:
+            if t.key:
+                prefix = re.match(r"^([A-Z]+)", t.key)
+                if prefix:
+                    prefix_counts[prefix.group(1)] += 1
+        if prefix_counts:
+            top_prefix = max(prefix_counts, key=prefix_counts.get)  # type: ignore[arg-type]
+            label = _SN_PREFIX_MAP.get(top_prefix, top_prefix)
+            return f"{label} Dashboard"
+        return "ServiceNow Dashboard"
+
+    # Jira: group by project key
     projects = set()
     for t in tickets:
         if t.key and "-" in t.key:
@@ -778,8 +1236,12 @@ def _auto_title(tickets: List[JiraTicket], user_title: Optional[str]) -> str:
 
 def generate_html(tickets: List[JiraTicket], data: DashboardData,
                   title: str = "Jira Dashboard", source_file: str = "",
-                  stale_days: int = 14) -> str:
+                  stale_days: int = 14,
+                  config: Optional[SourceConfig] = None) -> str:
     """Generate the complete self-contained HTML dashboard."""
+    if config is None:
+        config = _jira_config()
+    is_sn = config.name == "servicenow"
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     # Prepare chart data as JSON
@@ -804,12 +1266,121 @@ def generate_html(tickets: List[JiraTicket], data: DashboardData,
     ra_matrix_json = json.dumps(data.reporter_assignee_matrix)
     headers_json = json.dumps(data.all_headers)
 
+    # ServiceNow-specific JSON data
+    category_data_json = json.dumps(data.category_counts) if is_sn else "{}"
+    contact_type_data_json = json.dumps(data.contact_type_counts) if is_sn else "{}"
+    escalation_data_json = json.dumps(data.escalation_counts) if is_sn else "{}"
+    assignment_group_json = json.dumps(data.assignment_group_breakdown) if is_sn else "[]"
+    sla_by_priority_json = json.dumps(data.sla_by_priority) if is_sn else "{}"
+
+    # Inject config-appropriate JS colour maps
+    status_colours_json = json.dumps(config.status_colours)
+    priority_colours_json = json.dumps(config.priority_colours)
+    type_colours_json = json.dumps(config.type_colours)
+
     title_escaped = html.escape(title)
     source_escaped = html.escape(source_file)
 
-    # Story points display
-    sp_display = f"{data.total_story_points}" if data.total_story_points else "—"
-    sp_sub = f"{data.open_story_points} open" if data.total_story_points else "no data"
+    # 8th summary card: Story Points (Jira) or SLA Compliance % (ServiceNow)
+    if is_sn:
+        eighth_card_value = f"{data.sla_compliance_pct}%"
+        eighth_card_label = "SLA Compliance"
+        eighth_card_sub = f"{data.sla_met_count} met / {data.sla_missed_count} missed"
+        eighth_card_class = "success" if data.sla_compliance_pct >= 90 else "warning" if data.sla_compliance_pct >= 70 else "danger" if (data.sla_met_count + data.sla_missed_count) > 0 else ""
+    else:
+        sp_display = f"{data.total_story_points}" if data.total_story_points else "—"
+        sp_sub = f"{data.open_story_points} open" if data.total_story_points else "no data"
+        eighth_card_value = sp_display
+        eighth_card_label = "Story Points"
+        eighth_card_sub = sp_sub
+        eighth_card_class = ""
+
+    # --- Conditional HTML sections ---
+
+    # Jira-only sections
+    epic_section_html = ""
+    sprint_section_html = ""
+    estimation_section_html = ""
+    component_chart_html = ""
+    label_chart_html = ""
+    if not is_sn:
+        epic_section_html = """
+<!-- Epic Progress -->
+<div class="section">
+    <h2>Epic Progress</h2>
+    <div id="epic-progress"></div>
+</div>"""
+        sprint_section_html = """
+<!-- Sprint Progress -->
+<div class="section">
+    <h2>Sprint Progress</h2>
+    <div id="sprint-progress"></div>
+</div>"""
+        estimation_section_html = """
+<!-- Estimation Accuracy -->
+<div class="section">
+    <h2>Estimation Accuracy</h2>
+    <div id="estimation-accuracy"></div>
+</div>"""
+        component_chart_html = """
+    <div class="chart-container">
+        <h3>Components</h3>
+        <div id="chart-components"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Labels</h3>
+        <div id="chart-labels"></div>
+    </div>"""
+
+    # ServiceNow-only sections
+    sn_category_section = ""
+    sn_assignment_group_section = ""
+    sn_contact_type_section = ""
+    sn_escalation_section = ""
+    sn_sla_priority_section = ""
+    sn_extra_cards = ""
+    if is_sn:
+        sn_category_section = """
+<!-- Category Breakdown -->
+<div class="section">
+    <h2>Category Breakdown</h2>
+    <div id="chart-categories"></div>
+</div>"""
+        sn_assignment_group_section = """
+<!-- Assignment Group Breakdown -->
+<div class="section">
+    <h2>Assignment Group Breakdown</h2>
+    <div id="assignment-group-table"></div>
+</div>"""
+        sn_contact_type_section = """
+<!-- Contact Type Distribution -->
+<div class="charts-grid">
+    <div class="chart-container">
+        <h3>Contact Type Distribution</h3>
+        <div id="chart-contact-type"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Escalation Analysis</h3>
+        <div id="chart-escalation"></div>
+    </div>
+</div>"""
+        sn_sla_priority_section = """
+<!-- SLA by Priority -->
+<div class="section">
+    <h2>SLA Compliance by Priority</h2>
+    <div id="sla-priority-chart"></div>
+</div>"""
+        sn_extra_cards = f"""
+    <div class="card">
+        <div class="card-value">{data.avg_reassignment_count}</div>
+        <div class="card-label">Avg Reassignments</div>
+        <div class="card-sub">per ticket</div>
+    </div>
+    <div class="card">
+        <div class="card-value">{data.avg_reopen_count}</div>
+        <div class="card-label">Avg Reopens</div>
+        <div class="card-sub">per ticket</div>
+    </div>"""
 
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -1018,11 +1589,12 @@ tr:hover {{ background: var(--xps-charcoal); }}
         <div class="card-label">Unassigned</div>
         <div class="card-sub">open, no owner</div>
     </div>
-    <div class="card">
-        <div class="card-value">{sp_display}</div>
-        <div class="card-label">Story Points</div>
-        <div class="card-sub">{sp_sub}</div>
+    <div class="card {eighth_card_class}">
+        <div class="card-value">{eighth_card_value}</div>
+        <div class="card-label">{eighth_card_label}</div>
+        <div class="card-sub">{eighth_card_sub}</div>
     </div>
+{sn_extra_cards}
 </div>
 
 <!-- Created vs Resolved Trend -->
@@ -1049,14 +1621,7 @@ tr:hover {{ background: var(--xps-charcoal); }}
         <h3>Issue Type Distribution</h3>
         <div id="chart-type"></div>
     </div>
-    <div class="chart-container">
-        <h3>Components</h3>
-        <div id="chart-components"></div>
-    </div>
-    <div class="chart-container">
-        <h3>Labels</h3>
-        <div id="chart-labels"></div>
-    </div>
+{component_chart_html}
 </div>
 
 <!-- Priority SLA -->
@@ -1065,17 +1630,13 @@ tr:hover {{ background: var(--xps-charcoal); }}
     <div id="priority-sla-chart"></div>
 </div>
 
-<!-- Epic Progress -->
-<div class="section">
-    <h2>Epic Progress</h2>
-    <div id="epic-progress"></div>
-</div>
+{sn_sla_priority_section}
+{sn_category_section}
+{sn_contact_type_section}
+{sn_assignment_group_section}
 
-<!-- Sprint Progress -->
-<div class="section">
-    <h2>Sprint Progress</h2>
-    <div id="sprint-progress"></div>
-</div>
+{epic_section_html}
+{sprint_section_html}
 
 <!-- Assignee Breakdown -->
 <div class="section">
@@ -1117,11 +1678,7 @@ tr:hover {{ background: var(--xps-charcoal); }}
     </div>
 </div>
 
-<!-- Estimation Accuracy -->
-<div class="section">
-    <h2>Estimation Accuracy</h2>
-    <div id="estimation-accuracy"></div>
-</div>
+{estimation_section_html}
 
 <!-- Oldest Open -->
 <div class="section">
@@ -1162,6 +1719,12 @@ const estimationData = {estimation_json};
 const raMatrix = {ra_matrix_json};
 const allTickets = {data.all_tickets_json};
 const allHeaders = {headers_json};
+const sourceType = "{config.name}";
+const categoryData = {category_data_json};
+const contactTypeData = {contact_type_data_json};
+const escalationData = {escalation_data_json};
+const assignmentGroupData = {assignment_group_json};
+const slaPriorityData = {sla_by_priority_json};
 
 // Theme
 function toggleTheme() {{
@@ -1169,28 +1732,10 @@ function toggleTheme() {{
     html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
 }}
 
-// Colour maps
-const statusColours = {{
-    'To Do': '#8A9499', 'Open': '#8A9499', 'Backlog': '#8A9499', 'New': '#8A9499',
-    'In Progress': '#4A9FD9', 'In Review': '#6BB3E3', 'In Development': '#4A9FD9',
-    'In Testing': '#6BB3E3', 'Active': '#4A9FD9', 'In UAT': '#6BB3E3',
-    'Done': '#4CAF50', 'Closed': '#4CAF50', 'Resolved': '#4CAF50', 'Complete': '#4CAF50',
-    'Blocked': '#F44336', 'Waiting': '#FF9800', 'Reopened': '#FF9800',
-}};
-const priorityColours = {{
-    'Critical': '#F44336', 'Highest': '#F44336', 'Blocker': '#F44336',
-    'High': '#FF9800', 'Major': '#FF9800',
-    'Medium': '#FFD54F', 'Normal': '#FFD54F',
-    'Low': '#4CAF50', 'Minor': '#4CAF50',
-    'Lowest': '#8A9499', 'Trivial': '#8A9499',
-}};
-const typeColours = {{
-    'Bug': '#F44336', 'Defect': '#F44336',
-    'Story': '#4A9FD9', 'User Story': '#4A9FD9',
-    'Task': '#8A9499', 'Sub-task': '#6BB3E3',
-    'Epic': '#9C27B0', 'Initiative': '#9C27B0',
-    'Improvement': '#FF9800', 'New Feature': '#4CAF50',
-}};
+// Colour maps (injected from config)
+const statusColours = {status_colours_json};
+const priorityColours = {priority_colours_json};
+const typeColours = {type_colours_json};
 const defaultColours = ['#4A9FD9','#4CAF50','#FF9800','#F44336','#9C27B0','#00BCD4','#8BC34A','#FF5722','#607D8B','#E91E63'];
 function getColour(map, key, idx) {{
     return map[key] || defaultColours[idx % defaultColours.length];
@@ -1594,17 +2139,78 @@ function goPage(p) {{
     renderTicketTable();
 }}
 
+// ServiceNow-specific renderers
+function renderAssignmentGroupTable() {{
+    const el = document.getElementById('assignment-group-table');
+    if (!el || !assignmentGroupData || assignmentGroupData.length === 0) {{ if(el) el.innerHTML = '<div class="no-data">No data available</div>'; return; }}
+    const cols = [
+        {{ key: 'group', label: 'Assignment Group' }},
+        {{ key: 'total', label: 'Total' }},
+        {{ key: 'open', label: 'Open' }},
+        {{ key: 'closed', label: 'Closed' }},
+        {{ key: 'sla_pct', label: 'SLA %' }},
+    ];
+    let html = '<table><thead><tr>';
+    for (const c of cols) {{
+        html += `<th onclick="sortAGTable('${{c.key}}')">${{c.label}}${{sortArrow('ag', c.key)}}</th>`;
+    }}
+    html += '</tr></thead><tbody>';
+    for (const r of assignmentGroupData) {{
+        const slaClass = r.sla_pct >= 90 ? 'style="color:var(--xps-success);font-weight:600"' : r.sla_pct >= 70 ? 'style="color:var(--xps-warning);font-weight:600"' : r.sla_pct > 0 ? 'style="color:var(--xps-danger);font-weight:600"' : '';
+        html += `<tr><td>${{r.group}}</td><td>${{r.total}}</td><td>${{r.open}}</td><td>${{r.closed}}</td><td ${{slaClass}}>${{r.sla_pct}}%</td></tr>`;
+    }}
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}}
+function sortAGTable(colKey) {{
+    sortTableData('ag', assignmentGroupData, colKey);
+    renderAssignmentGroupTable();
+}}
+
+function renderSLAByPriority() {{
+    const el = document.getElementById('sla-priority-chart');
+    if (!el || !slaPriorityData || Object.keys(slaPriorityData).length === 0) {{ if(el) el.innerHTML = '<div class="no-data">No SLA data available</div>'; return; }}
+    const labels = Object.keys(slaPriorityData);
+    const max = Math.max(...labels.map(l => (slaPriorityData[l].met||0) + (slaPriorityData[l].missed||0)), 1);
+    let html = '';
+    let i = 0;
+    for (const pri of labels) {{
+        const met = slaPriorityData[pri].met || 0;
+        const missed = slaPriorityData[pri].missed || 0;
+        const total = met + missed;
+        const pct = total > 0 ? (met / total * 100).toFixed(1) : 0;
+        const metW = max > 0 ? (met / max * 100) : 0;
+        const missedW = max > 0 ? (missed / max * 100) : 0;
+        html += `<div class="bar"><div class="bar-label" title="${{pri}}">${{pri}}</div><div class="bar-track"><div class="bar-fill" style="width:${{metW}}%;background:#4CAF50">${{met}} met</div><div class="bar-fill" style="width:${{missedW}}%;background:#F44336;border-radius:0">${{missed}} missed</div></div></div>`;
+        i++;
+    }}
+    el.innerHTML = html;
+}}
+
 // Render all
 renderTrend();
 renderBarChart('chart-status', statusData, statusColours);
 renderBarChart('chart-assignee', assigneeData, null);
 renderDonut('chart-priority', priorityData, priorityColours);
 renderDonut('chart-type', typeData, typeColours);
-renderBarChart('chart-components', componentData, null);
-renderBarChart('chart-labels', labelData, null);
 renderBarChart('priority-sla-chart', resolutionPriorityData, priorityColours);
-renderProgressTable('epic-progress', epicProgress, 'epic', 'epic');
-renderProgressTable('sprint-progress', sprintProgress, 'sprint', 'sprint');
+
+if (sourceType !== 'servicenow') {{
+    renderBarChart('chart-components', componentData, null);
+    renderBarChart('chart-labels', labelData, null);
+    renderProgressTable('epic-progress', epicProgress, 'epic', 'epic');
+    renderProgressTable('sprint-progress', sprintProgress, 'sprint', 'sprint');
+    renderEstimation();
+}}
+
+if (sourceType === 'servicenow') {{
+    renderBarChart('chart-categories', categoryData, null);
+    renderDonut('chart-contact-type', contactTypeData, null);
+    renderDonut('chart-escalation', escalationData, null);
+    renderAssignmentGroupTable();
+    renderSLAByPriority();
+}}
+
 renderAssigneeBreakdown();
 renderReporterBreakdown();
 renderRAMatrix();
@@ -1612,7 +2218,6 @@ buildStaleFilterOptions();
 renderStaleness();
 renderBarChart('resolution-chart', resolutionData, null);
 renderBarChart('age-chart', ageBucketsData, null);
-renderEstimation();
 renderOldest();
 renderTicketTable();
 </script>
@@ -1626,9 +2231,9 @@ renderTicketTable();
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Generate an HTML dashboard from a Jira CSV export."
+        description="Generate an HTML dashboard from a Jira or ServiceNow CSV export."
     )
-    parser.add_argument("input_csv", help="Path to Jira CSV export")
+    parser.add_argument("input_csv", help="Path to Jira or ServiceNow CSV export")
     parser.add_argument("-o", "--output", default="dashboard.html",
                         help="Output HTML file (default: dashboard.html)")
     parser.add_argument("-v", "--verbose", action="store_true",
@@ -1637,6 +2242,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         help="Days without activity to flag as stale (default: 14)")
     parser.add_argument("--title", default=None,
                         help="Dashboard title (default: auto-detected from issue keys)")
+    parser.add_argument("--source", choices=["jira", "servicenow", "auto"],
+                        default="auto",
+                        help="CSV source format (default: auto-detect from headers)")
     args = parser.parse_args(argv)
 
     input_path = Path(args.input_csv)
@@ -1644,12 +2252,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"Error: File not found: {args.input_csv}", file=sys.stderr)
         return 1
 
-    tickets = parse_jira_csv(str(input_path), verbose=args.verbose)
+    # Determine source config
+    if args.source == "auto":
+        # Read headers to auto-detect
+        content = input_path.read_text(encoding="utf-8-sig")
+        reader = csv.reader(io.StringIO(content))
+        try:
+            headers = next(reader)
+        except StopIteration:
+            headers = []
+        detected = _detect_source(headers)
+        config = _servicenow_config() if detected == "servicenow" else _jira_config()
+        if args.verbose:
+            print(f"Auto-detected source: {config.display_name}")
+    elif args.source == "servicenow":
+        config = _servicenow_config()
+    else:
+        config = _jira_config()
+
+    tickets = _parse_csv(str(input_path), config, verbose=args.verbose)
     if not tickets:
         print("Warning: No tickets found in CSV.", file=sys.stderr)
 
-    title = _auto_title(tickets, args.title)
-    data = compute_dashboard_data(tickets, stale_days=args.stale_days)
+    title = _auto_title(tickets, args.title, config)
+    data = compute_dashboard_data(tickets, stale_days=args.stale_days, config=config)
 
     if args.verbose:
         print(f"  Open: {data.open_tickets}, Closed: {data.closed_tickets}")
@@ -1660,15 +2286,21 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"  Unassigned: {data.unassigned_tickets}")
         print(f"  Blocked: {data.blocked_tickets}")
         print(f"  Avg age (open): {data.avg_age_open_days} days")
-        print(f"  Story points: {data.total_story_points} total, {data.open_story_points} open")
-        print(f"  Epics: {len(data.epic_progress)}, Sprints: {len(data.sprint_progress)}")
-        print(f"  Components: {len(data.component_counts)}, Labels: {len(data.label_counts)}")
+        if config.has_story_points:
+            print(f"  Story points: {data.total_story_points} total, {data.open_story_points} open")
+            print(f"  Epics: {len(data.epic_progress)}, Sprints: {len(data.sprint_progress)}")
+            print(f"  Components: {len(data.component_counts)}, Labels: {len(data.label_counts)}")
+        if config.has_sla:
+            print(f"  SLA compliance: {data.sla_compliance_pct}% ({data.sla_met_count} met / {data.sla_missed_count} missed)")
+            print(f"  Categories: {len(data.category_counts)}, Assignment groups: {len(data.assignment_group_counts)}")
+            print(f"  Avg reassignments: {data.avg_reassignment_count}, Avg reopens: {data.avg_reopen_count}")
 
     html_content = generate_html(
         tickets, data,
         title=title,
         source_file=input_path.name,
         stale_days=args.stale_days,
+        config=config,
     )
 
     output_path = Path(args.output)
