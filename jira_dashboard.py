@@ -530,10 +530,20 @@ def _find_work_notes_columns(headers: List[str]) -> List[int]:
     return indices
 
 
+def _read_file(path: Path) -> str:
+    """Read a file trying UTF-8 first, falling back to cp1252 for Windows exports."""
+    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+        try:
+            return path.read_text(encoding=enc)
+        except (UnicodeDecodeError, ValueError):
+            continue
+    return path.read_text(encoding="utf-8-sig", errors="replace")
+
+
 def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> List[JiraTicket]:
     """Parse a CSV export into a list of JiraTicket objects using the given config."""
     path = Path(filepath)
-    content = path.read_text(encoding="utf-8-sig")
+    content = _read_file(path)
     reader = csv.reader(io.StringIO(content))
     try:
         headers = next(reader)
@@ -2255,7 +2265,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # Determine source config
     if args.source == "auto":
         # Read headers to auto-detect
-        content = input_path.read_text(encoding="utf-8-sig")
+        content = _read_file(input_path)
         reader = csv.reader(io.StringIO(content))
         try:
             headers = next(reader)
