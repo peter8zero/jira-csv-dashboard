@@ -1,0 +1,877 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Incident Dashboard</title>
+<style>
+:root {
+    --xps-blue: #4A9FD9;
+    --xps-blue-light: #6BB3E3;
+    --xps-blue-dark: #3B8AC4;
+    --xps-charcoal: #2D3539;
+    --xps-charcoal-light: #3D474C;
+    --xps-charcoal-dark: #1E2528;
+    --xps-dark-bg: #161B1E;
+    --xps-card-bg: #232A2E;
+    --xps-text: #F0F2F3;
+    --xps-text-muted: #8A9499;
+    --xps-border: rgba(255, 255, 255, 0.1);
+    --xps-success: #4CAF50;
+    --xps-warning: #FF9800;
+    --xps-danger: #F44336;
+}
+[data-theme="light"] {
+    --xps-charcoal: #E8EAEC;
+    --xps-charcoal-light: #F5F6F7;
+    --xps-charcoal-dark: #D0D4D8;
+    --xps-dark-bg: #F0F2F4;
+    --xps-card-bg: #FFFFFF;
+    --xps-text: #1E2528;
+    --xps-text-muted: #5A6469;
+    --xps-border: rgba(0, 0, 0, 0.1);
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    background: var(--xps-dark-bg);
+    color: var(--xps-text);
+    line-height: 1.5;
+}
+.header {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--xps-charcoal-dark);
+    border-bottom: 2px solid var(--xps-blue);
+    padding: 12px 24px;
+    display: flex; justify-content: space-between; align-items: center;
+    flex-wrap: wrap; gap: 8px;
+}
+.header h1 { font-size: 1.3rem; font-weight: 600; }
+.header-meta { color: var(--xps-text-muted); font-size: 0.8rem; }
+.theme-toggle {
+    background: var(--xps-charcoal); border: 1px solid var(--xps-border);
+    color: var(--xps-text); padding: 6px 14px; border-radius: 6px; cursor: pointer;
+    font-size: 0.85rem;
+}
+.theme-toggle:hover { background: var(--xps-blue); color: #fff; }
+.container { max-width: 1400px; margin: 0 auto; padding: 20px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }
+.card {
+    background: var(--xps-card-bg); border: 1px solid var(--xps-border);
+    border-radius: 10px; padding: 16px; text-align: center;
+}
+.card-value { font-size: 1.8rem; font-weight: 700; color: var(--xps-blue); }
+.card-label { font-size: 0.8rem; color: var(--xps-text-muted); margin-top: 4px; }
+.card-sub { font-size: 0.7rem; color: var(--xps-text-muted); }
+.card.danger .card-value { color: var(--xps-danger); }
+.card.warning .card-value { color: var(--xps-warning); }
+.card.success .card-value { color: var(--xps-success); }
+.section {
+    background: var(--xps-card-bg); border: 1px solid var(--xps-border);
+    border-radius: 10px; padding: 24px; margin-bottom: 24px;
+}
+.section h2 {
+    font-size: 1.1rem; font-weight: 600; margin-bottom: 16px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--xps-border);
+    color: var(--xps-blue-light);
+}
+.charts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; margin-bottom: 24px; }
+.chart-container {
+    background: var(--xps-card-bg); border: 1px solid var(--xps-border);
+    border-radius: 10px; padding: 20px;
+}
+.chart-container h3 { font-size: 0.95rem; margin-bottom: 12px; color: var(--xps-text); }
+table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+th {
+    text-align: left; padding: 10px 12px; background: var(--xps-charcoal-dark);
+    color: var(--xps-text-muted); font-weight: 600; cursor: pointer;
+    border-bottom: 2px solid var(--xps-border); white-space: nowrap;
+    user-select: none;
+}
+th:hover { color: var(--xps-blue-light); }
+td { padding: 8px 12px; border-bottom: 1px solid var(--xps-border); }
+tr:hover { background: var(--xps-charcoal); }
+.stale-red { background: rgba(244, 67, 54, 0.1); }
+.stale-amber { background: rgba(255, 152, 0, 0.1); }
+.stale-green { background: rgba(76, 175, 80, 0.1); }
+.search-box {
+    width: 100%; padding: 10px 14px; margin-bottom: 12px;
+    background: var(--xps-charcoal); border: 1px solid var(--xps-border);
+    border-radius: 6px; color: var(--xps-text); font-size: 0.9rem;
+}
+.search-box:focus { outline: none; border-color: var(--xps-blue); }
+.stale-filters {
+    display: flex; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; align-items: center;
+}
+.stale-filters label { font-size: 0.8rem; color: var(--xps-text-muted); }
+.stale-filters select, .stale-filters input {
+    padding: 6px 10px; background: var(--xps-charcoal); border: 1px solid var(--xps-border);
+    border-radius: 6px; color: var(--xps-text); font-size: 0.8rem; min-width: 140px;
+}
+.stale-filters select:focus, .stale-filters input:focus { outline: none; border-color: var(--xps-blue); }
+.stale-filter-group { display: flex; flex-direction: column; gap: 3px; }
+.pagination {
+    display: flex; justify-content: center; align-items: center; gap: 8px;
+    margin-top: 12px; flex-wrap: wrap;
+}
+.pagination button {
+    background: var(--xps-charcoal); border: 1px solid var(--xps-border);
+    color: var(--xps-text); padding: 6px 12px; border-radius: 4px; cursor: pointer;
+    font-size: 0.8rem;
+}
+.pagination button:hover { background: var(--xps-blue); color: #fff; }
+.pagination button.active { background: var(--xps-blue); color: #fff; }
+.pagination span { color: var(--xps-text-muted); font-size: 0.8rem; }
+.duration-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr)); gap: 24px; }
+.bar { display: flex; align-items: center; margin-bottom: 6px; }
+.bar-label { width: 140px; font-size: 0.8rem; color: var(--xps-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+.bar-track { flex: 1; height: 22px; background: var(--xps-charcoal); border-radius: 4px; overflow: hidden; position: relative; }
+.bar-fill { height: 100%; border-radius: 4px; transition: width 0.3s; display: flex; align-items: center; padding-left: 8px; font-size: 0.75rem; color: #fff; font-weight: 600; }
+.donut-container { display: flex; justify-content: center; align-items: center; gap: 20px; flex-wrap: wrap; }
+.donut-legend { font-size: 0.8rem; }
+.donut-legend-item { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.donut-legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.no-data { color: var(--xps-text-muted); text-align: center; padding: 30px; font-style: italic; }
+.progress-bar-bg { width: 100%; height: 16px; background: var(--xps-charcoal); border-radius: 4px; overflow: hidden; }
+.progress-bar-fill { height: 100%; background: var(--xps-success); border-radius: 4px; transition: width 0.3s; min-width: 2px; }
+.trend-bar-group { display: flex; align-items: flex-end; gap: 2px; }
+.trend-bar { min-width: 8px; border-radius: 2px 2px 0 0; }
+.trend-container { overflow-x: auto; }
+.trend-chart { display: flex; align-items: flex-end; gap: 8px; min-height: 150px; padding: 10px 0; }
+.trend-month { display: flex; flex-direction: column; align-items: center; gap: 4px; }
+.trend-month-label { font-size: 0.65rem; color: var(--xps-text-muted); white-space: nowrap; }
+.trend-legend { display: flex; gap: 16px; margin-bottom: 8px; font-size: 0.8rem; }
+.trend-legend-item { display: flex; align-items: center; gap: 4px; }
+.trend-legend-swatch { width: 12px; height: 12px; border-radius: 2px; }
+.accuracy-good { color: var(--xps-success); font-weight: 600; }
+.accuracy-warn { color: var(--xps-warning); font-weight: 600; }
+.accuracy-bad { color: var(--xps-danger); font-weight: 600; }
+@media (max-width: 768px) {
+    .charts-grid { grid-template-columns: 1fr; }
+    .header { flex-direction: column; text-align: center; }
+    .cards { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 480px) {
+    .cards { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+
+<div class="header">
+    <div>
+        <h1>Incident Dashboard</h1>
+        <div class="header-meta">Source: servicenow.csv &middot; Generated: 2026-02-12 21:41 &middot; 2 tickets</div>
+    </div>
+    <button class="theme-toggle" onclick="toggleTheme()">Toggle Theme</button>
+</div>
+
+<div class="container">
+
+<!-- Summary Cards (8) -->
+<div class="cards">
+    <div class="card">
+        <div class="card-value">2</div>
+        <div class="card-label">Total Tickets</div>
+        <div class="card-sub">0 open / 2 closed</div>
+    </div>
+    <div class="card success">
+        <div class="card-value">100.0%</div>
+        <div class="card-label">Resolution Rate</div>
+        <div class="card-sub">2 resolved</div>
+    </div>
+    <div class="card">
+        <div class="card-value">0.0</div>
+        <div class="card-label">Avg Age (Open)</div>
+        <div class="card-sub">days</div>
+    </div>
+    <div class="card">
+        <div class="card-value">146.9</div>
+        <div class="card-label">Avg Resolution</div>
+        <div class="card-sub">days to close</div>
+    </div>
+    <div class="card ">
+        <div class="card-value">0</div>
+        <div class="card-label">Overdue</div>
+        <div class="card-sub">past due date</div>
+    </div>
+    <div class="card ">
+        <div class="card-value">0</div>
+        <div class="card-label">Stale</div>
+        <div class="card-sub">no activity 14+ days</div>
+    </div>
+    <div class="card ">
+        <div class="card-value">0</div>
+        <div class="card-label">Unassigned</div>
+        <div class="card-sub">open, no owner</div>
+    </div>
+    <div class="card success">
+        <div class="card-value">100.0%</div>
+        <div class="card-label">SLA Compliance</div>
+        <div class="card-sub">2 met / 0 missed</div>
+    </div>
+
+    <div class="card">
+        <div class="card-value">1.5</div>
+        <div class="card-label">Avg Reassignments</div>
+        <div class="card-sub">per ticket</div>
+    </div>
+    <div class="card">
+        <div class="card-value">0.0</div>
+        <div class="card-label">Avg Reopens</div>
+        <div class="card-sub">per ticket</div>
+    </div>
+</div>
+
+<!-- Created vs Resolved Trend -->
+<div class="section">
+    <h2>Created vs Resolved Trend</h2>
+    <div id="trend-chart"></div>
+</div>
+
+<!-- Charts -->
+<div class="charts-grid">
+    <div class="chart-container">
+        <h3>Status Breakdown</h3>
+        <div id="chart-status"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Assignee Workload (Open)</h3>
+        <div id="chart-assignee"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Priority Distribution</h3>
+        <div id="chart-priority"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Issue Type Distribution</h3>
+        <div id="chart-type"></div>
+    </div>
+
+</div>
+
+<!-- Priority SLA -->
+<div class="section">
+    <h2>Priority SLA — Avg Resolution Time by Priority</h2>
+    <div id="priority-sla-chart"></div>
+</div>
+
+
+<!-- SLA by Priority -->
+<div class="section">
+    <h2>SLA Compliance by Priority</h2>
+    <div id="sla-priority-chart"></div>
+</div>
+
+<!-- Category Breakdown -->
+<div class="section">
+    <h2>Category Breakdown</h2>
+    <div id="chart-categories"></div>
+</div>
+
+<!-- Contact Type Distribution -->
+<div class="charts-grid">
+    <div class="chart-container">
+        <h3>Contact Type Distribution</h3>
+        <div id="chart-contact-type"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Escalation Analysis</h3>
+        <div id="chart-escalation"></div>
+    </div>
+</div>
+
+<!-- Assignment Group Breakdown -->
+<div class="section">
+    <h2>Assignment Group Breakdown</h2>
+    <div id="assignment-group-table"></div>
+</div>
+
+
+
+
+<!-- Assignee Breakdown -->
+<div class="section">
+    <h2>Assignee Breakdown</h2>
+    <div id="assignee-breakdown"></div>
+</div>
+
+<!-- Reporter Breakdown -->
+<div class="section">
+    <h2>Reporter Breakdown</h2>
+    <div id="reporter-breakdown"></div>
+</div>
+
+<!-- Reporter → Assignee Flow -->
+<div class="section">
+    <h2>Reporter → Assignee Flow</h2>
+    <div id="ra-matrix"></div>
+</div>
+
+<!-- Staleness Table -->
+<div class="section">
+    <h2>Staleness Report</h2>
+    <div class="stale-filters" id="stale-filters"></div>
+    <div id="staleness-table"></div>
+</div>
+
+<!-- Duration Metrics -->
+<div class="section">
+    <h2>Duration Metrics</h2>
+    <div class="duration-grid">
+        <div>
+            <h3 style="font-size:0.95rem;margin-bottom:12px;">Avg Resolution Time by Type</h3>
+            <div id="resolution-chart"></div>
+        </div>
+        <div>
+            <h3 style="font-size:0.95rem;margin-bottom:12px;">Open Ticket Age Distribution</h3>
+            <div id="age-chart"></div>
+        </div>
+    </div>
+</div>
+
+
+
+<!-- Oldest Open -->
+<div class="section">
+    <h2>Top 10 Oldest Open Tickets</h2>
+    <div id="oldest-table"></div>
+</div>
+
+<!-- Full Ticket Table -->
+<div class="section">
+    <h2>All Tickets</h2>
+    <input type="text" class="search-box" id="ticket-search" placeholder="Search tickets..." oninput="filterTickets()">
+    <div id="ticket-table"></div>
+    <div class="pagination" id="pagination"></div>
+</div>
+
+</div>
+
+<script>
+// Data
+const statusData = {"Closed": 2};
+const assigneeData = {};
+const priorityData = {"4 - Low": 1, "2 - High": 1};
+const typeData = {"Incident": 2};
+const componentData = {};
+const labelData = {};
+const createdByMonth = {"2024-12": 2, "2025-09": 0};
+const resolvedByMonth = {"2024-12": 1, "2025-09": 1};
+const stalenessData = [];
+const resolutionData = {"Incident": 146.9};
+const resolutionPriorityData = {"4 - Low": 4.0, "2 - High": 289.9};
+const ageBucketsData = {"< 7d": 0, "7\u201314d": 0, "14\u201330d": 0, "30\u201360d": 0, "60\u201390d": 0, "90d+": 0};
+const oldestData = [];
+const assigneeBreakdown = [{"assignee": "Bob Smith", "total": 1, "open": 0, "closed": 1, "avg_age": 0.0, "overdue": 0, "stale": 0, "story_points": 0.0}, {"assignee": "Bob Dan", "total": 1, "open": 0, "closed": 1, "avg_age": 0.0, "overdue": 0, "stale": 0, "story_points": 0.0}];
+const reporterBreakdown = [{"reporter": "Joe Bob", "total": 1, "open": 0, "closed": 1, "overdue": 0}, {"reporter": "Bob Joe", "total": 1, "open": 0, "closed": 1, "overdue": 0}];
+const epicProgress = [];
+const sprintProgress = [];
+const estimationData = [];
+const raMatrix = [{"reporter": "Joe Bob", "assignee": "Bob Smith", "count": 1}, {"reporter": "Bob Joe", "assignee": "Bob Dan", "count": 1}];
+const allTickets = [{"number": "INC0149495", "service_offering": "Scheme ABC", "description": "some wording here", "opened_at": "12/2/24 8:16", "business_service": "PenScope", "short_description": "ERF needs fixing", "caller_id": "Joe Bob", "caller_id.u_jobfamily": "Admin", "priority": "4 - Low", "state": "Closed", "category": "Calculation Support Team", "assignment_group": "Calculation Support Team", "assigned_to": "Bob Smith", "sys_updated_on": "12/6/24 8:19", "sys_updated_by": "a.name@email.com", "actions_taken": "", "active": "FALSE", "activity_due": "UNKNOWN", "work_end": "", "work_start": "", "additional_assignee_list": "", "comments": "some comment\n", "u_affected_user": "Bob Dylan", "agile_story": "", "approval": "Not Yet Requested", "approval_history": "", "business_duration": "172973", "business_impact": "", "business_stc": "172,973", "caused_by": "", "rfc": "", "contact_type": "Self-service", "child_incidents": "0", "closed_at": "12/6/24 8:19", "closed_by": "Bob Dylan", "company": "", "cmdb_ci": "", "contract": "", "correlation_id": "", "correlation_display": "", "sys_created_on": "12/2/24 8:16", "sys_created_by": "someone@email.com", "delivery_plan": "", "delivery_task": "", "sys_domain": "global", "sys_domain_path": "/", "due_date": "", "calendar_duration": "345773", "task_effective_number": "INC0149495", "escalation": "Normal", "expected_start": "", "lessons_learned": "", "follow_up": "", "group_list": "", "impact": "3 - Low", "incident_state": "Closed", "knowledge": "FALSE", "reopened_time": "", "reopened_by": "", "location": "", "made_sla": "TRUE", "major_incident_state": "", "notify": "Do Not Notify", "hold_reason": "", "opened_by": "Bob Snort", "order": "", "origin_id": "", "origin_table": "", "overview": "", "parent": "", "parent_incident": "", "u_pending_until_date": "", "cause": "", "problem_id": "", "promoted_on": "", "promoted_by": "", "proposed_on": "", "proposed_by": "", "reassignment_count": "2", "u_reopen_count_multiplied": "0", "reopen_count": "0", "close_code": "Closed/Resolved by Caller", "close_notes": "Closed by Caller", "calendar_stc": "345,773", "resolved_at": "12/6/24 8:19", "resolved_by": "Smith Bob", "sla_due": "UNKNOWN", "u_scheme_name": "", "u_boolean_1": "TRUE", "severity": "3 - Low", "skills": "", "subcategory": "Project Support", "sys_tags": "", "sys_class_name": "Incident", "time_worked": "", "timeline": "", "route_reason": "", "trigger_rule": "", "universal_request": "", "sys_mod_count": "7", "upon_approval": "Proceed to Next Task", "upon_reject": "Cancel all future Tasks", "urgency": "2 - Medium", "user_input": "", "watch_list": "", "work_notes": "a work note\n", "work_notes_list": ""}, {"number": "INC0149622", "service_offering": "Scheme XYZ", "description": "some more wording here", "opened_at": "12/2/24 12:27", "business_service": "Other/Miscellaneous", "short_description": "Calculation Fix", "caller_id": "Bob Joe", "caller_id.u_jobfamily": "Admin", "priority": "2 - High", "state": "Closed", "category": "Calculation Support Team", "assignment_group": "Calculation Support Team", "assigned_to": "Bob Dan", "sys_updated_on": "9/23/25 10:00", "sys_updated_by": "system", "actions_taken": "", "active": "FALSE", "activity_due": "UNKNOWN", "work_end": "", "work_start": "", "additional_assignee_list": "", "comments": "another comment\n", "u_affected_user": "Smith Bob", "agile_story": "", "approval": "Not Yet Requested", "approval_history": "", "business_duration": "8975566", "business_impact": "", "business_stc": "8,975,566", "caused_by": "", "rfc": "", "contact_type": "Self-service", "child_incidents": "0", "closed_at": "9/23/25 10:00", "closed_by": "Jill Bob", "company": "", "cmdb_ci": "", "contract": "", "correlation_id": "IMPS-389", "correlation_display": "", "sys_created_on": "12/2/24 12:27", "sys_created_by": "another@email.com", "delivery_plan": "", "delivery_task": "", "sys_domain": "global", "sys_domain_path": "/", "due_date": "", "calendar_duration": "25042366", "task_effective_number": "INC0149622", "escalation": "Normal", "expected_start": "", "lessons_learned": "", "follow_up": "", "group_list": "", "impact": "2 - Medium", "incident_state": "Closed", "knowledge": "FALSE", "reopened_time": "", "reopened_by": "", "location": "", "made_sla": "TRUE", "major_incident_state": "", "notify": "Do Not Notify", "hold_reason": "", "opened_by": "Smith Jones", "order": "", "origin_id": "", "origin_table": "", "overview": "", "parent": "", "parent_incident": "", "u_pending_until_date": "", "cause": "", "problem_id": "", "promoted_on": "", "promoted_by": "", "proposed_on": "", "proposed_by": "", "reassignment_count": "1", "u_reopen_count_multiplied": "0", "reopen_count": "0", "close_code": "Resolved \u2013 Solution Proposed", "close_notes": "closed notes", "calendar_stc": "25,042,366", "resolved_at": "9/18/25 9:40", "resolved_by": "Bob Jones", "sla_due": "UNKNOWN", "u_scheme_name": "Scheme Name", "u_boolean_1": "TRUE", "severity": "3 - Low", "skills": "", "subcategory": "Project Support", "sys_tags": "", "sys_class_name": "Incident", "time_worked": "", "timeline": "", "route_reason": "", "trigger_rule": "", "universal_request": "", "sys_mod_count": "35", "upon_approval": "Proceed to Next Task", "upon_reject": "Cancel all future Tasks", "urgency": "1 - High", "user_input": "", "watch_list": "Joe Low", "work_notes": "another work note\n", "work_notes_list": ""}];
+const allHeaders = ["number", "service_offering", "description", "opened_at", "business_service", "short_description", "caller_id", "caller_id.u_jobfamily", "priority", "state", "category", "assignment_group", "assigned_to", "sys_updated_on", "sys_updated_by", "actions_taken", "active", "activity_due", "work_end", "work_start", "additional_assignee_list", "comments", "u_affected_user", "agile_story", "approval", "approval_history", "business_duration", "business_impact", "business_stc", "caused_by", "rfc", "contact_type", "child_incidents", "closed_at", "closed_by", "company", "cmdb_ci", "contract", "correlation_id", "correlation_display", "sys_created_on", "sys_created_by", "delivery_plan", "delivery_task", "sys_domain", "sys_domain_path", "due_date", "calendar_duration", "task_effective_number", "escalation", "expected_start", "lessons_learned", "follow_up", "group_list", "impact", "incident_state", "knowledge", "reopened_time", "reopened_by", "location", "made_sla", "major_incident_state", "notify", "hold_reason", "opened_by", "order", "origin_id", "origin_table", "overview", "parent", "parent_incident", "u_pending_until_date", "cause", "problem_id", "promoted_on", "promoted_by", "proposed_on", "proposed_by", "reassignment_count", "u_reopen_count_multiplied", "reopen_count", "close_code", "close_notes", "calendar_stc", "resolved_at", "resolved_by", "sla_due", "u_scheme_name", "u_boolean_1", "severity", "skills", "subcategory", "sys_tags", "sys_class_name", "time_worked", "timeline", "route_reason", "trigger_rule", "universal_request", "sys_mod_count", "upon_approval", "upon_reject", "urgency", "user_input", "watch_list", "work_notes", "work_notes_list"];
+const sourceType = "servicenow";
+const categoryData = {"Calculation Support Team": 2};
+const contactTypeData = {"Self-service": 2};
+const escalationData = {"Normal": 2};
+const assignmentGroupData = [{"group": "Calculation Support Team", "total": 2, "open": 0, "closed": 2, "sla_pct": 100.0}];
+const slaPriorityData = {"2 - High": {"met": 1, "missed": 0}, "4 - Low": {"met": 1, "missed": 0}};
+
+// Theme
+function toggleTheme() {
+    const html = document.documentElement;
+    html.dataset.theme = html.dataset.theme === 'dark' ? 'light' : 'dark';
+}
+
+// Colour maps (injected from config)
+const statusColours = {"New": "#8A9499", "Open": "#8A9499", "In Progress": "#4A9FD9", "Work in Progress": "#4A9FD9", "Assess": "#6BB3E3", "Authorize": "#6BB3E3", "Scheduled": "#00BCD4", "Implement": "#4A9FD9", "Review": "#6BB3E3", "Fix in Progress": "#4A9FD9", "On Hold": "#FF9800", "Pending": "#FF9800", "Resolved": "#4CAF50", "Closed": "#4CAF50", "Closed Complete": "#4CAF50", "Closed Incomplete": "#8A9499", "Closed Skipped": "#8A9499", "Cancelled": "#607D8B", "1": "#8A9499", "2": "#4A9FD9", "3": "#FF9800", "6": "#4CAF50", "7": "#4CAF50", "8": "#607D8B"};
+const priorityColours = {"1 - Critical": "#F44336", "1": "#F44336", "Critical": "#F44336", "2 - High": "#FF9800", "2": "#FF9800", "High": "#FF9800", "3 - Moderate": "#FFD54F", "3": "#FFD54F", "Moderate": "#FFD54F", "4 - Low": "#4CAF50", "4": "#4CAF50", "Low": "#4CAF50", "5 - Planning": "#8A9499", "5": "#8A9499", "Planning": "#8A9499"};
+const typeColours = {"Incident": "#F44336", "incident": "#F44336", "Problem": "#FF9800", "problem": "#FF9800", "Change": "#4A9FD9", "change_request": "#4A9FD9", "Request": "#4CAF50", "sc_request": "#4CAF50", "Task": "#8A9499", "sc_task": "#6BB3E3", "Catalog Task": "#6BB3E3", "sc_cat_item": "#6BB3E3"};
+const defaultColours = ['#4A9FD9','#4CAF50','#FF9800','#F44336','#9C27B0','#00BCD4','#8BC34A','#FF5722','#607D8B','#E91E63'];
+function getColour(map, key, idx) {
+    return map[key] || defaultColours[idx % defaultColours.length];
+}
+
+// Bar chart renderer
+function renderBarChart(containerId, data, colourMap) {
+    const el = document.getElementById(containerId);
+    if (!data || Object.keys(data).length === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    const max = Math.max(...Object.values(data));
+    let html = '';
+    let i = 0;
+    for (const [label, count] of Object.entries(data)) {
+        const pct = max > 0 ? (count / max * 100) : 0;
+        const colour = colourMap ? getColour(colourMap, label, i) : defaultColours[i % defaultColours.length];
+        html += `<div class="bar">
+            <div class="bar-label" title="${label}">${label}</div>
+            <div class="bar-track">
+                <div class="bar-fill" style="width:${pct}%;background:${colour}">${count}</div>
+            </div>
+        </div>`;
+        i++;
+    }
+    el.innerHTML = html;
+}
+
+// Donut chart renderer (SVG)
+function renderDonut(containerId, data, colourMap) {
+    const el = document.getElementById(containerId);
+    if (!data || Object.keys(data).length === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    const total = Object.values(data).reduce((a, b) => a + b, 0);
+    if (total === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    const cx = 80, cy = 80, r = 60, ir = 35;
+    let svg = `<svg width="160" height="160" viewBox="0 0 160 160">`;
+    let startAngle = -Math.PI / 2;
+    let i = 0;
+    for (const [label, count] of Object.entries(data)) {
+        const angle = (count / total) * 2 * Math.PI;
+        const endAngle = startAngle + angle;
+        const large = angle > Math.PI ? 1 : 0;
+        const x1o = cx + r * Math.cos(startAngle), y1o = cy + r * Math.sin(startAngle);
+        const x2o = cx + r * Math.cos(endAngle), y2o = cy + r * Math.sin(endAngle);
+        const x1i = cx + ir * Math.cos(endAngle), y1i = cy + ir * Math.sin(endAngle);
+        const x2i = cx + ir * Math.cos(startAngle), y2i = cy + ir * Math.sin(startAngle);
+        const colour = getColour(colourMap, label, i);
+        svg += `<path d="M${x1o},${y1o} A${r},${r} 0 ${large} 1 ${x2o},${y2o} L${x1i},${y1i} A${ir},${ir} 0 ${large} 0 ${x2i},${y2i} Z" fill="${colour}" opacity="0.85"><title>${label}: ${count}</title></path>`;
+        startAngle = endAngle;
+        i++;
+    }
+    svg += `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central" fill="var(--xps-text)" font-size="18" font-weight="700">${total}</text>`;
+    svg += '</svg>';
+    let legend = '<div class="donut-legend">';
+    i = 0;
+    for (const [label, count] of Object.entries(data)) {
+        const colour = getColour(colourMap, label, i);
+        const pct = ((count / total) * 100).toFixed(1);
+        legend += `<div class="donut-legend-item"><div class="donut-legend-swatch" style="background:${colour}"></div>${label}: ${count} (${pct}%)</div>`;
+        i++;
+    }
+    legend += '</div>';
+    el.innerHTML = `<div class="donut-container">${svg}${legend}</div>`;
+}
+
+// Created vs Resolved trend chart
+function renderTrend() {
+    const el = document.getElementById('trend-chart');
+    const months = Object.keys(createdByMonth);
+    if (months.length === 0) { el.innerHTML = '<div class="no-data">No date data available</div>'; return; }
+    const allVals = [...Object.values(createdByMonth), ...Object.values(resolvedByMonth)];
+    const max = Math.max(...allVals, 1);
+    const barHeight = 120;
+    let html = '<div class="trend-legend"><div class="trend-legend-item"><div class="trend-legend-swatch" style="background:#4A9FD9"></div>Created</div><div class="trend-legend-item"><div class="trend-legend-swatch" style="background:#4CAF50"></div>Resolved</div></div>';
+    html += '<div class="trend-container"><div class="trend-chart">';
+    for (const m of months) {
+        const c = createdByMonth[m] || 0;
+        const r = resolvedByMonth[m] || 0;
+        const ch = Math.max(c / max * barHeight, 2);
+        const rh = Math.max(r / max * barHeight, 2);
+        html += `<div class="trend-month"><div class="trend-bar-group"><div class="trend-bar" style="width:14px;height:${ch}px;background:#4A9FD9" title="Created: ${c}"></div><div class="trend-bar" style="width:14px;height:${rh}px;background:#4CAF50" title="Resolved: ${r}"></div></div><div class="trend-month-label">${m}</div></div>`;
+    }
+    html += '</div></div>';
+    el.innerHTML = html;
+}
+
+// Progress table renderer (epic/sprint)
+function renderProgressTable(containerId, data, nameKey, sortId) {
+    const el = document.getElementById(containerId);
+    if (!data || data.length === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    const cols = [
+        { key: nameKey, label: nameKey.charAt(0).toUpperCase() + nameKey.slice(1) },
+        { key: 'total', label: 'Total' },
+        { key: 'open', label: 'Open' },
+        { key: 'closed', label: 'Closed' },
+        { key: 'pct_done', label: '% Done' },
+        { key: 'story_points', label: 'Points' },
+    ];
+    let html = '<table><thead><tr>';
+    for (const c of cols) {
+        html += `<th onclick="sortProgressTable('${sortId}', ${JSON.stringify(containerId)}, ${JSON.stringify(nameKey)}, '${c.key}')">${c.label}${sortArrow(sortId, c.key)}</th>`;
+    }
+    html += '<th style="min-width:120px">Progress</th></tr></thead><tbody>';
+    for (const r of data) {
+        html += `<tr><td>${r[nameKey]}</td><td>${r.total}</td><td>${r.open}</td><td>${r.closed}</td><td>${r.pct_done}%</td><td>${r.story_points}</td><td><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${r.pct_done}%"></div></div></td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+function sortProgressTable(sortId, containerId, nameKey, colKey) {
+    const dataMap = { 'epic': epicProgress, 'sprint': sprintProgress };
+    sortTableData(sortId, dataMap[sortId], colKey);
+    renderProgressTable(containerId, dataMap[sortId], nameKey, sortId);
+}
+
+// Assignee breakdown table
+const assigneeCols = [
+    { key: 'assignee', label: 'Assignee' },
+    { key: 'total', label: 'Total' },
+    { key: 'open', label: 'Open' },
+    { key: 'closed', label: 'Closed' },
+    { key: 'avg_age', label: 'Avg Age (days)' },
+    { key: 'overdue', label: 'Overdue' },
+    { key: 'stale', label: 'Stale' },
+    { key: 'story_points', label: 'Points' },
+];
+function sortAssigneeBreakdown(colKey) {
+    sortTableData('ab', assigneeBreakdown, colKey);
+    renderAssigneeBreakdown();
+}
+function renderAssigneeBreakdown() {
+    const el = document.getElementById('assignee-breakdown');
+    if (!assigneeBreakdown || assigneeBreakdown.length === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    let html = '<table><thead><tr>';
+    for (const c of assigneeCols) {
+        html += `<th onclick="sortAssigneeBreakdown('${c.key}')">${c.label}${sortArrow('ab', c.key)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const r of assigneeBreakdown) {
+        const overdueClass = r.overdue > 0 ? ' style="color:var(--xps-danger);font-weight:600"' : '';
+        const staleClass = r.stale > 0 ? ' style="color:var(--xps-warning);font-weight:600"' : '';
+        html += `<tr><td>${r.assignee}</td><td>${r.total}</td><td>${r.open}</td><td>${r.closed}</td><td>${r.avg_age}</td><td${overdueClass}>${r.overdue}</td><td${staleClass}>${r.stale}</td><td>${r.story_points}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+// Reporter breakdown table
+const reporterCols = [
+    { key: 'reporter', label: 'Reporter' },
+    { key: 'total', label: 'Total' },
+    { key: 'open', label: 'Open' },
+    { key: 'closed', label: 'Closed' },
+    { key: 'overdue', label: 'Overdue' },
+];
+function sortReporterBreakdown(colKey) {
+    sortTableData('rb', reporterBreakdown, colKey);
+    renderReporterBreakdown();
+}
+function renderReporterBreakdown() {
+    const el = document.getElementById('reporter-breakdown');
+    if (!reporterBreakdown || reporterBreakdown.length === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    let html = '<table><thead><tr>';
+    for (const c of reporterCols) {
+        html += `<th onclick="sortReporterBreakdown('${c.key}')">${c.label}${sortArrow('rb', c.key)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const r of reporterBreakdown) {
+        const overdueClass = r.overdue > 0 ? ' style="color:var(--xps-danger);font-weight:600"' : '';
+        html += `<tr><td>${r.reporter}</td><td>${r.total}</td><td>${r.open}</td><td>${r.closed}</td><td${overdueClass}>${r.overdue}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+// Reporter-Assignee matrix
+const raCols = [
+    { key: 'reporter', label: 'Reporter' },
+    { key: 'assignee', label: 'Assignee' },
+    { key: 'count', label: 'Tickets' },
+];
+function sortRAMatrix(colKey) {
+    sortTableData('ra', raMatrix, colKey);
+    renderRAMatrix();
+}
+function renderRAMatrix() {
+    const el = document.getElementById('ra-matrix');
+    if (!raMatrix || raMatrix.length === 0) { el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    let html = '<table><thead><tr>';
+    for (const c of raCols) {
+        html += `<th onclick="sortRAMatrix('${c.key}')">${c.label}${sortArrow('ra', c.key)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const r of raMatrix) {
+        html += `<tr><td>${r.reporter}</td><td>${r.assignee}</td><td>${r.count}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+// Estimation accuracy table
+function renderEstimation() {
+    const el = document.getElementById('estimation-accuracy');
+    if (!estimationData || estimationData.length === 0) { el.innerHTML = '<div class="no-data">No estimation data available (requires Original Estimate and Time Spent fields)</div>'; return; }
+    let html = '<table><thead><tr><th>Issue Type</th><th>Tickets</th><th>Avg Estimated</th><th>Avg Actual</th><th>Accuracy</th></tr></thead><tbody>';
+    for (const r of estimationData) {
+        let cls = 'accuracy-good';
+        if (r.accuracy_pct > 150 || r.accuracy_pct < 50) cls = 'accuracy-bad';
+        else if (r.accuracy_pct > 120 || r.accuracy_pct < 80) cls = 'accuracy-warn';
+        html += `<tr><td>${r.type}</td><td>${r.count}</td><td>${r.avg_estimated}</td><td>${r.avg_actual}</td><td class="${cls}">${r.accuracy_pct}%</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+// Sortable table state
+const tableSort = {};
+function sortTableData(tableId, data, colKey) {
+    if (!tableSort[tableId]) tableSort[tableId] = { col: null, asc: true };
+    const s = tableSort[tableId];
+    if (s.col === colKey) { s.asc = !s.asc; }
+    else { s.col = colKey; s.asc = true; }
+    data.sort((a, b) => {
+        const va = String(a[colKey] ?? '').toLowerCase();
+        const vb = String(b[colKey] ?? '').toLowerCase();
+        const na = parseFloat(va), nb = parseFloat(vb);
+        if (!isNaN(na) && !isNaN(nb)) return s.asc ? na - nb : nb - na;
+        return s.asc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+}
+function sortArrow(tableId, colKey) {
+    const s = tableSort[tableId];
+    if (!s || s.col !== colKey) return '';
+    return s.asc ? ' ▲' : ' ▼';
+}
+
+// Staleness table with filters
+const staleCols = [
+    { key: 'key', label: 'Key' },
+    { key: 'summary', label: 'Summary' },
+    { key: 'reporter', label: 'Reporter' },
+    { key: 'assignee', label: 'Assignee' },
+    { key: 'status', label: 'Status' },
+    { key: 'last_comment_date', label: 'Last Activity' },
+    { key: 'days_since', label: 'Days' },
+    { key: 'comment_preview', label: 'Comment' },
+];
+const staleFilters = { key: '', status: '', reporter: '', assignee: '' };
+
+function buildStaleFilterOptions() {
+    const statuses = [...new Set(stalenessData.map(r => r.status))].sort();
+    const reporters = [...new Set(stalenessData.map(r => r.reporter))].sort();
+    const assignees = [...new Set(stalenessData.map(r => r.assignee))].sort();
+    const el = document.getElementById('stale-filters');
+    el.innerHTML = `
+        <div class="stale-filter-group"><label>Key</label><input type="text" placeholder="Filter by key…" oninput="staleFilters.key=this.value.toLowerCase();renderStaleness()" /></div>
+        <div class="stale-filter-group"><label>Status</label><select onchange="staleFilters.status=this.value;renderStaleness()"><option value="">All</option>${statuses.map(s => `<option value="${s}">${s}</option>`).join('')}</select></div>
+        <div class="stale-filter-group"><label>Reporter</label><select onchange="staleFilters.reporter=this.value;renderStaleness()"><option value="">All</option>${reporters.map(s => `<option value="${s}">${s}</option>`).join('')}</select></div>
+        <div class="stale-filter-group"><label>Assignee</label><select onchange="staleFilters.assignee=this.value;renderStaleness()"><option value="">All</option>${assignees.map(s => `<option value="${s}">${s}</option>`).join('')}</select></div>
+    `;
+}
+
+function getFilteredStaleData() {
+    return stalenessData.filter(r => {
+        if (staleFilters.key && !r.key.toLowerCase().includes(staleFilters.key)) return false;
+        if (staleFilters.status && r.status !== staleFilters.status) return false;
+        if (staleFilters.reporter && r.reporter !== staleFilters.reporter) return false;
+        if (staleFilters.assignee && r.assignee !== staleFilters.assignee) return false;
+        return true;
+    });
+}
+
+function sortStaleness(colKey) {
+    sortTableData('stale', stalenessData, colKey);
+    renderStaleness();
+}
+function renderStaleness() {
+    const el = document.getElementById('staleness-table');
+    if (!stalenessData || stalenessData.length === 0) { el.innerHTML = '<div class="no-data">No open tickets found</div>'; return; }
+    const filtered = getFilteredStaleData();
+    let html = '<table><thead><tr>';
+    for (const c of staleCols) {
+        html += `<th onclick="sortStaleness('${c.key}')">${c.label}${sortArrow('stale', c.key)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    if (filtered.length === 0) {
+        html += `<tr><td colspan="${staleCols.length}" style="text-align:center;color:var(--xps-text-muted);padding:20px;">No tickets match the current filters</td></tr>`;
+    } else {
+        for (const r of filtered) {
+            let cls = '';
+            if (r.days_since > 30) cls = 'stale-red';
+            else if (r.days_since > 14) cls = 'stale-amber';
+            else cls = 'stale-green';
+            html += `<tr class="${cls}"><td>${r.key}</td><td>${r.summary}</td><td>${r.reporter}</td><td>${r.assignee}</td><td>${r.status}</td><td>${r.last_comment_date}</td><td>${r.days_since}</td><td>${r.comment_preview}</td></tr>`;
+        }
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+// Oldest table
+const oldestCols = [
+    { key: 'key', label: 'Key' },
+    { key: 'summary', label: 'Summary' },
+    { key: 'assignee', label: 'Assignee' },
+    { key: 'status', label: 'Status' },
+    { key: 'created', label: 'Created' },
+    { key: 'age_days', label: 'Age (days)' },
+];
+function sortOldest(colKey) {
+    sortTableData('oldest', oldestData, colKey);
+    renderOldest();
+}
+function renderOldest() {
+    const el = document.getElementById('oldest-table');
+    if (!oldestData || oldestData.length === 0) { el.innerHTML = '<div class="no-data">No open tickets found</div>'; return; }
+    let html = '<table><thead><tr>';
+    for (const c of oldestCols) {
+        html += `<th onclick="sortOldest('${c.key}')">${c.label}${sortArrow('oldest', c.key)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const r of oldestData) {
+        html += `<tr><td>${r.key}</td><td>${r.summary}</td><td>${r.assignee}</td><td>${r.status}</td><td>${r.created}</td><td>${r.age_days}</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+
+// Full ticket table with pagination and sorting
+let filteredTickets = [...allTickets];
+let currentPage = 1;
+const pageSize = 50;
+let sortCol = null;
+let sortAsc = true;
+
+function filterTickets() {
+    const q = document.getElementById('ticket-search').value.toLowerCase();
+    filteredTickets = allTickets.filter(t => {
+        return Object.values(t).some(v => String(v).toLowerCase().includes(q));
+    });
+    currentPage = 1;
+    renderTicketTable();
+}
+
+function sortTickets(col) {
+    if (sortCol === col) { sortAsc = !sortAsc; }
+    else { sortCol = col; sortAsc = true; }
+    filteredTickets.sort((a, b) => {
+        const va = String(a[col] || '').toLowerCase();
+        const vb = String(b[col] || '').toLowerCase();
+        const na = parseFloat(va), nb = parseFloat(vb);
+        if (!isNaN(na) && !isNaN(nb)) return sortAsc ? na - nb : nb - na;
+        return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+    });
+    renderTicketTable();
+}
+
+function renderTicketTable() {
+    const el = document.getElementById('ticket-table');
+    if (!allTickets || allTickets.length === 0) { el.innerHTML = '<div class="no-data">No ticket data available</div>'; return; }
+    const cols = allHeaders.slice(0, 12);
+    const totalPages = Math.ceil(filteredTickets.length / pageSize);
+    const start = (currentPage - 1) * pageSize;
+    const pageData = filteredTickets.slice(start, start + pageSize);
+
+    let html = '<div style="overflow-x:auto"><table><thead><tr>';
+    for (const c of cols) {
+        const arrow = sortCol === c ? (sortAsc ? ' ▲' : ' ▼') : '';
+        html += `<th onclick="sortTickets('${c.replace(/'/g, "\\'")}')">${c}${arrow}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const row of pageData) {
+        html += '<tr>';
+        for (const c of cols) {
+            const val = String(row[c] || '');
+            const display = val.length > 80 ? val.substring(0, 77) + '…' : val;
+            html += `<td title="${val.replace(/"/g, '&quot;')}">${display}</td>`;
+        }
+        html += '</tr>';
+    }
+    html += '</tbody></table></div>';
+    el.innerHTML = html;
+
+    const pag = document.getElementById('pagination');
+    if (totalPages <= 1) { pag.innerHTML = `<span>${filteredTickets.length} tickets</span>`; return; }
+    let pagHtml = `<span>${filteredTickets.length} tickets</span>`;
+    pagHtml += `<button onclick="goPage(1)" ${currentPage===1?'disabled':''}>«</button>`;
+    pagHtml += `<button onclick="goPage(${currentPage-1})" ${currentPage===1?'disabled':''}>‹</button>`;
+    const startP = Math.max(1, currentPage - 3);
+    const endP = Math.min(totalPages, currentPage + 3);
+    for (let p = startP; p <= endP; p++) {
+        pagHtml += `<button onclick="goPage(${p})" class="${p===currentPage?'active':''}">${p}</button>`;
+    }
+    pagHtml += `<button onclick="goPage(${currentPage+1})" ${currentPage===totalPages?'disabled':''}>›</button>`;
+    pagHtml += `<button onclick="goPage(${totalPages})" ${currentPage===totalPages?'disabled':''}>»</button>`;
+    pag.innerHTML = pagHtml;
+}
+
+function goPage(p) {
+    const totalPages = Math.ceil(filteredTickets.length / pageSize);
+    if (p < 1 || p > totalPages) return;
+    currentPage = p;
+    renderTicketTable();
+}
+
+// ServiceNow-specific renderers
+function renderAssignmentGroupTable() {
+    const el = document.getElementById('assignment-group-table');
+    if (!el || !assignmentGroupData || assignmentGroupData.length === 0) { if(el) el.innerHTML = '<div class="no-data">No data available</div>'; return; }
+    const cols = [
+        { key: 'group', label: 'Assignment Group' },
+        { key: 'total', label: 'Total' },
+        { key: 'open', label: 'Open' },
+        { key: 'closed', label: 'Closed' },
+        { key: 'sla_pct', label: 'SLA %' },
+    ];
+    let html = '<table><thead><tr>';
+    for (const c of cols) {
+        html += `<th onclick="sortAGTable('${c.key}')">${c.label}${sortArrow('ag', c.key)}</th>`;
+    }
+    html += '</tr></thead><tbody>';
+    for (const r of assignmentGroupData) {
+        const slaClass = r.sla_pct >= 90 ? 'style="color:var(--xps-success);font-weight:600"' : r.sla_pct >= 70 ? 'style="color:var(--xps-warning);font-weight:600"' : r.sla_pct > 0 ? 'style="color:var(--xps-danger);font-weight:600"' : '';
+        html += `<tr><td>${r.group}</td><td>${r.total}</td><td>${r.open}</td><td>${r.closed}</td><td ${slaClass}>${r.sla_pct}%</td></tr>`;
+    }
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}
+function sortAGTable(colKey) {
+    sortTableData('ag', assignmentGroupData, colKey);
+    renderAssignmentGroupTable();
+}
+
+function renderSLAByPriority() {
+    const el = document.getElementById('sla-priority-chart');
+    if (!el || !slaPriorityData || Object.keys(slaPriorityData).length === 0) { if(el) el.innerHTML = '<div class="no-data">No SLA data available</div>'; return; }
+    const labels = Object.keys(slaPriorityData);
+    const max = Math.max(...labels.map(l => (slaPriorityData[l].met||0) + (slaPriorityData[l].missed||0)), 1);
+    let html = '';
+    let i = 0;
+    for (const pri of labels) {
+        const met = slaPriorityData[pri].met || 0;
+        const missed = slaPriorityData[pri].missed || 0;
+        const total = met + missed;
+        const pct = total > 0 ? (met / total * 100).toFixed(1) : 0;
+        const metW = max > 0 ? (met / max * 100) : 0;
+        const missedW = max > 0 ? (missed / max * 100) : 0;
+        html += `<div class="bar"><div class="bar-label" title="${pri}">${pri}</div><div class="bar-track"><div class="bar-fill" style="width:${metW}%;background:#4CAF50">${met} met</div><div class="bar-fill" style="width:${missedW}%;background:#F44336;border-radius:0">${missed} missed</div></div></div>`;
+        i++;
+    }
+    el.innerHTML = html;
+}
+
+// Render all
+renderTrend();
+renderBarChart('chart-status', statusData, statusColours);
+renderBarChart('chart-assignee', assigneeData, null);
+renderDonut('chart-priority', priorityData, priorityColours);
+renderDonut('chart-type', typeData, typeColours);
+renderBarChart('priority-sla-chart', resolutionPriorityData, priorityColours);
+
+if (sourceType !== 'servicenow') {
+    renderBarChart('chart-components', componentData, null);
+    renderBarChart('chart-labels', labelData, null);
+    renderProgressTable('epic-progress', epicProgress, 'epic', 'epic');
+    renderProgressTable('sprint-progress', sprintProgress, 'sprint', 'sprint');
+    renderEstimation();
+}
+
+if (sourceType === 'servicenow') {
+    renderBarChart('chart-categories', categoryData, null);
+    renderDonut('chart-contact-type', contactTypeData, null);
+    renderDonut('chart-escalation', escalationData, null);
+    renderAssignmentGroupTable();
+    renderSLAByPriority();
+}
+
+renderAssigneeBreakdown();
+renderReporterBreakdown();
+renderRAMatrix();
+buildStaleFilterOptions();
+renderStaleness();
+renderBarChart('resolution-chart', resolutionData, null);
+renderBarChart('age-chart', ageBucketsData, null);
+renderOldest();
+renderTicketTable();
+</script>
+</body>
+</html>

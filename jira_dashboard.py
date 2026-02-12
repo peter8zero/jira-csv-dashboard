@@ -589,6 +589,7 @@ def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> Li
     else:
         comment_cols = _find_comment_columns(headers)
     tickets: List[JiraTicket] = []
+    first_raw_row: Optional[List[str]] = None
 
     def _get(row: List[str], canonical: str) -> str:
         """Return the first non-empty value across all candidate columns."""
@@ -600,6 +601,8 @@ def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> Li
     for row_num, row in enumerate(reader, start=2):
         if not any(cell.strip() for cell in row):
             continue
+        if first_raw_row is None:
+            first_raw_row = list(row)
         t = JiraTicket()
         t.key = _get(row, "key")
         t.summary = _get(row, "summary")
@@ -688,9 +691,20 @@ def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> Li
         # Show sample data from first ticket for key diagnostic fields
         if tickets:
             t0 = tickets[0]
+            # Show raw CSV values for date columns to diagnose parsing
+            def _raw_val(canonical: str) -> str:
+                if first_raw_row is None:
+                    return "N/A"
+                for idx in lookup.get(canonical, []):
+                    if idx < len(first_raw_row) and first_raw_row[idx].strip():
+                        return first_raw_row[idx].strip()
+                return "(empty)"
             print(f"  Sample ticket: key={t0.key!r}, status={t0.status!r}, "
                   f"created={t0.created}, assignee={t0.assignee!r}")
+            print(f"  Raw 'created' (opened_at) value: {_raw_val('created')!r}")
             if is_sn:
+                print(f"  Raw 'resolved' value: {_raw_val('resolved')!r}")
+                print(f"  Raw 'updated' value: {_raw_val('updated')!r}")
                 print(f"    category={t0.category!r}, assignment_group={t0.assignment_group!r}, "
                       f"made_sla={t0.made_sla}, issue_type={t0.issue_type!r}")
             # Show unique status values to diagnose open/closed classification
@@ -698,6 +712,11 @@ def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> Li
             print(f"  Unique status values ({len(statuses)}): {sorted(statuses)[:15]}")
             created_count = sum(1 for t in tickets if t.created is not None)
             print(f"  Tickets with created date: {created_count}/{len(tickets)}")
+            if created_count == 0 and tickets:
+                # Extra diagnostic: show what columns are mapped to 'created'
+                created_indices = lookup.get("created", [])
+                created_headers = [headers[i] for i in created_indices if i < len(headers)]
+                print(f"  DEBUG 'created' mapped to columns: {created_headers} (indices: {created_indices})")
 
     return tickets
 
