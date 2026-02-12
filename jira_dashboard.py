@@ -1265,7 +1265,7 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
         for h in d.all_headers:
             row_data[h] = t.raw_fields.get(h, "")
         all_rows.append(row_data)
-    d.all_tickets_json = json.dumps(all_rows, default=str)
+    d.all_tickets_json = json.dumps(all_rows, default=str).replace("</", "<\\/")
 
     return d
 
@@ -2269,39 +2269,40 @@ function renderSLAByPriority() {{
     el.innerHTML = html;
 }}
 
-// Render all
-renderTrend();
-renderBarChart('chart-status', statusData, statusColours);
-renderBarChart('chart-assignee', assigneeData, null);
-renderDonut('chart-priority', priorityData, priorityColours);
-renderDonut('chart-type', typeData, typeColours);
-renderBarChart('priority-sla-chart', resolutionPriorityData, priorityColours);
+// Render all — each in try/catch so one failure doesn't block the rest
+function safeRender(name, fn) {{ try {{ fn(); }} catch(e) {{ console.error('Render error in ' + name + ':', e); }} }}
+safeRender('trend', () => renderTrend());
+safeRender('status', () => renderBarChart('chart-status', statusData, statusColours));
+safeRender('assignee-chart', () => renderBarChart('chart-assignee', assigneeData, null));
+safeRender('priority', () => renderDonut('chart-priority', priorityData, priorityColours));
+safeRender('type', () => renderDonut('chart-type', typeData, typeColours));
+safeRender('priority-sla', () => renderBarChart('priority-sla-chart', resolutionPriorityData, priorityColours));
 
 if (sourceType !== 'servicenow') {{
-    renderBarChart('chart-components', componentData, null);
-    renderBarChart('chart-labels', labelData, null);
-    renderProgressTable('epic-progress', epicProgress, 'epic', 'epic');
-    renderProgressTable('sprint-progress', sprintProgress, 'sprint', 'sprint');
-    renderEstimation();
+    safeRender('components', () => renderBarChart('chart-components', componentData, null));
+    safeRender('labels', () => renderBarChart('chart-labels', labelData, null));
+    safeRender('epic', () => renderProgressTable('epic-progress', epicProgress, 'epic', 'epic'));
+    safeRender('sprint', () => renderProgressTable('sprint-progress', sprintProgress, 'sprint', 'sprint'));
+    safeRender('estimation', () => renderEstimation());
 }}
 
 if (sourceType === 'servicenow') {{
-    renderBarChart('chart-categories', categoryData, null);
-    renderDonut('chart-contact-type', contactTypeData, null);
-    renderDonut('chart-escalation', escalationData, null);
-    renderAssignmentGroupTable();
-    renderSLAByPriority();
+    safeRender('categories', () => renderBarChart('chart-categories', categoryData, null));
+    safeRender('contact-type', () => renderDonut('chart-contact-type', contactTypeData, null));
+    safeRender('escalation', () => renderDonut('chart-escalation', escalationData, null));
+    safeRender('assignment-group', () => renderAssignmentGroupTable());
+    safeRender('sla-priority', () => renderSLAByPriority());
 }}
 
-renderAssigneeBreakdown();
-renderReporterBreakdown();
-renderRAMatrix();
-buildStaleFilterOptions();
-renderStaleness();
-renderBarChart('resolution-chart', resolutionData, null);
-renderBarChart('age-chart', ageBucketsData, null);
-renderOldest();
-renderTicketTable();
+safeRender('assignee-breakdown', () => renderAssigneeBreakdown());
+safeRender('reporter-breakdown', () => renderReporterBreakdown());
+safeRender('ra-matrix', () => renderRAMatrix());
+safeRender('stale-filters', () => buildStaleFilterOptions());
+safeRender('staleness', () => renderStaleness());
+safeRender('resolution', () => renderBarChart('resolution-chart', resolutionData, null));
+safeRender('age', () => renderBarChart('age-chart', ageBucketsData, null));
+safeRender('oldest', () => renderOldest());
+safeRender('ticket-table', () => renderTicketTable());
 </script>
 </body>
 </html>"""
