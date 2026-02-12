@@ -137,29 +137,30 @@ def _jira_config() -> SourceConfig:
 
 
 _SERVICENOW_ALIASES: Dict[str, List[str]] = {
-    "key": ["number", "task number", "ticket number"],
+    "key": ["number", "task number", "ticket number", "task_number", "ticket_number"],
     "summary": ["short description", "short_description", "description"],
-    "status": ["state", "status", "incident state"],
+    "status": ["state", "status", "incident state", "incident_state"],
     "assignee": ["assigned to", "assigned_to", "assignee"],
-    "reporter": ["opened by", "opened_by", "caller", "caller id", "requested by"],
+    "reporter": ["caller_id", "caller id", "caller", "opened by", "opened_by",
+                 "requested by", "requested_by"],
     "priority": ["priority"],
-    "issue_type": ["type", "task type", "category", "sys_class_name"],
+    "issue_type": ["sys_class_name", "type", "task type", "task_type"],
     "created": ["opened at", "opened_at", "sys_created_on", "created"],
-    "updated": ["updated at", "updated_at", "sys_updated_on", "updated"],
+    "updated": ["updated at", "updated_at", "sys_updated_on", "sys_updated_by", "updated"],
     "resolved": ["resolved at", "resolved_at", "closed at", "closed_at"],
-    "due_date": ["due date", "due_date", "expected start"],
+    "due_date": ["due date", "due_date", "expected start", "expected_start"],
     "labels": [],
     "components": [],
     "fix_versions": [],
-    "resolution": ["close code", "close_code", "resolution code"],
+    "resolution": ["close code", "close_code", "resolution code", "resolution_code"],
     "story_points": [],
     "original_estimate": [],
-    "time_spent": ["time worked", "time_worked", "business duration"],
+    "time_spent": ["time worked", "time_worked"],
     "remaining_estimate": [],
     "epic_link": [],
     "sprint": [],
-    "project": ["company", "department"],
-    "parent": ["parent", "parent incident"],
+    "project": ["company", "department", "service_offering", "business_service"],
+    "parent": ["parent", "parent incident", "parent_incident"],
     # ServiceNow-specific fields
     "category": ["category"],
     "subcategory": ["subcategory", "sub_category"],
@@ -168,15 +169,16 @@ _SERVICENOW_ALIASES: Dict[str, List[str]] = {
     "impact": ["impact"],
     "urgency": ["urgency"],
     "made_sla": ["made sla", "made_sla"],
-    "business_duration": ["business duration", "business_duration"],
+    "business_duration": ["business duration", "business_duration", "business_stc",
+                          "calendar_duration", "calendar_stc"],
     "escalation": ["escalation"],
     "reassignment_count": ["reassignment count", "reassignment_count"],
-    "reopen_count": ["reopen count", "reopen_count"],
-    "close_notes": ["close notes", "close_notes", "resolution notes"],
+    "reopen_count": ["reopen count", "reopen_count", "u_reopen_count_multiplied"],
+    "close_notes": ["close notes", "close_notes", "resolution notes", "resolution_notes"],
     "closed_at": ["closed at", "closed_at"],
     "severity": ["severity"],
     "active": ["active"],
-    "configuration_item": ["configuration item", "cmdb_ci", "ci"],
+    "configuration_item": ["configuration item", "configuration_item", "cmdb_ci", "ci"],
 }
 
 
@@ -189,11 +191,15 @@ def _servicenow_config() -> SourceConfig:
         open_statuses={"new", "in progress", "on hold", "open", "work in progress",
                        "assess", "authorize", "scheduled", "implement", "review",
                        "assessed", "root cause analysis", "fix in progress",
-                       "1", "2", "3"},
+                       "active", "awaiting info", "awaiting problem",
+                       "awaiting change", "awaiting vendor",
+                       "1", "2", "3", "-5"},
         closed_statuses={"resolved", "closed", "cancelled", "closed complete",
-                         "closed incomplete", "closed skipped",
-                         "6", "7", "8"},
-        blocked_statuses={"on hold", "pending"},
+                         "closed incomplete", "closed skipped", "complete",
+                         "6", "7", "8", "4"},
+        blocked_statuses={"on hold", "pending", "awaiting info",
+                          "awaiting problem", "awaiting change",
+                          "awaiting vendor", "-5", "3"},
         status_colours={
             "New": "#8A9499", "Open": "#8A9499",
             "In Progress": "#4A9FD9", "Work in Progress": "#4A9FD9",
@@ -204,6 +210,9 @@ def _servicenow_config() -> SourceConfig:
             "Resolved": "#4CAF50", "Closed": "#4CAF50",
             "Closed Complete": "#4CAF50", "Closed Incomplete": "#8A9499",
             "Closed Skipped": "#8A9499", "Cancelled": "#607D8B",
+            # Numeric state values
+            "1": "#8A9499", "2": "#4A9FD9", "3": "#FF9800",
+            "6": "#4CAF50", "7": "#4CAF50", "8": "#607D8B",
         },
         priority_colours={
             "1 - Critical": "#F44336", "1": "#F44336", "Critical": "#F44336",
@@ -213,9 +222,12 @@ def _servicenow_config() -> SourceConfig:
             "5 - Planning": "#8A9499", "5": "#8A9499", "Planning": "#8A9499",
         },
         type_colours={
-            "Incident": "#F44336", "Problem": "#FF9800",
-            "Change": "#4A9FD9", "Request": "#4CAF50",
-            "Task": "#8A9499", "Catalog Task": "#6BB3E3",
+            "Incident": "#F44336", "incident": "#F44336",
+            "Problem": "#FF9800", "problem": "#FF9800",
+            "Change": "#4A9FD9", "change_request": "#4A9FD9",
+            "Request": "#4CAF50", "sc_request": "#4CAF50",
+            "Task": "#8A9499", "sc_task": "#6BB3E3",
+            "Catalog Task": "#6BB3E3", "sc_cat_item": "#6BB3E3",
         },
         default_unassigned="Unassigned",
         has_epics=False,
@@ -242,11 +254,17 @@ def _detect_source(headers: List[str]) -> str:
     """
     lower = {h.strip().lower() for h in headers}
 
-    jira_indicators = {"issue key", "sprint", "epic link", "story points",
-                       "issue type", "issuetype", "fix version/s"}
-    sn_indicators = {"number", "opened at", "assignment group", "made sla",
-                     "short description", "configuration item", "contact type",
-                     "opened by", "resolved at", "reassignment count"}
+    jira_indicators = {"issue key", "issue_key", "sprint", "epic link", "epic_link",
+                       "story points", "story_points", "issue type", "issuetype",
+                       "fix version/s"}
+    sn_indicators = {"number", "opened at", "opened_at", "assignment group",
+                     "assignment_group", "made sla", "made_sla", "short description",
+                     "short_description", "configuration item", "configuration_item",
+                     "cmdb_ci", "contact type", "contact_type", "opened by",
+                     "opened_by", "caller_id", "resolved at", "resolved_at",
+                     "reassignment count", "reassignment_count", "incident_state",
+                     "sys_class_name", "sys_created_on", "sys_updated_on",
+                     "service_offering", "business_service"}
 
     # Also check for Custom field(...) wrapper — very Jira-specific
     jira_score = sum(1 for ind in jira_indicators if ind in lower)
@@ -525,7 +543,7 @@ def _find_work_notes_columns(headers: List[str]) -> List[int]:
     indices = []
     for i, h in enumerate(headers):
         hl = h.strip().lower()
-        if "work notes" in hl or "additional comments" in hl or "comment" in hl:
+        if "work notes" in hl or "additional comments" in hl or "comment" in hl or hl == "actions_taken" or hl == "work_notes":
             indices.append(i)
     return indices
 

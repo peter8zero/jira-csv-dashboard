@@ -948,6 +948,15 @@ class TestAutoDetect(unittest.TestCase):
                    "Configuration item"]
         self.assertEqual(_detect_source(headers), "servicenow")
 
+    def test_sn_underscore_headers(self):
+        """Real-world SN exports use underscore internal field names."""
+        headers = ["number", "short_description", "state", "opened_at",
+                   "assignment_group", "made_sla", "contact_type",
+                   "caller_id", "resolved_at", "reassignment_count",
+                   "sys_class_name", "sys_created_on", "incident_state",
+                   "service_offering", "business_service"]
+        self.assertEqual(_detect_source(headers), "servicenow")
+
 
 class TestServiceNowParsing(unittest.TestCase):
     """Tests for parsing ServiceNow CSV exports."""
@@ -985,6 +994,51 @@ class TestServiceNowParsing(unittest.TestCase):
             self.assertEqual(tickets[0].reopen_count, 0)
             self.assertFalse(tickets[1].made_sla)
             self.assertEqual(tickets[1].reopen_count, 1)
+
+    def test_underscore_column_names(self):
+        """Real-world SN exports use underscore internal field names."""
+        config = _servicenow_config()
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_csv(td, [
+                ["number", "short_description", "state", "assigned_to",
+                 "priority", "opened_at", "category", "assignment_group",
+                 "made_sla", "reassignment_count", "reopen_count",
+                 "sys_class_name", "caller_id", "contact_type",
+                 "incident_state", "opened_by", "resolved_at"],
+                ["INC0001", "Server down", "In Progress", "Alice",
+                 "1 - Critical", "2024-01-15 09:00:00", "Hardware", "IT Support",
+                 "true", "2", "0", "incident", "Carol", "Phone",
+                 "2", "Dave", ""],
+            ])
+            tickets = _parse_csv(path, config)
+            self.assertEqual(len(tickets), 1)
+            t = tickets[0]
+            self.assertEqual(t.key, "INC0001")
+            self.assertEqual(t.summary, "Server down")
+            self.assertEqual(t.status, "In Progress")
+            self.assertEqual(t.assignee, "Alice")
+            self.assertEqual(t.category, "Hardware")
+            self.assertEqual(t.assignment_group, "IT Support")
+            self.assertTrue(t.made_sla)
+            self.assertEqual(t.reassignment_count, 2)
+            self.assertEqual(t.contact_type, "Phone")
+            # issue_type should come from sys_class_name, NOT category
+            self.assertEqual(t.issue_type, "incident")
+            # reporter should come from caller_id (preferred) over opened_by
+            self.assertEqual(t.reporter, "Carol")
+
+    def test_category_not_stolen_by_issue_type(self):
+        """category column should map to category field, not issue_type."""
+        config = _servicenow_config()
+        with tempfile.TemporaryDirectory() as td:
+            path = self._write_csv(td, [
+                ["number", "short_description", "state", "category",
+                 "sys_class_name"],
+                ["INC0001", "Test", "New", "Network", "incident"],
+            ])
+            tickets = _parse_csv(path, config)
+            self.assertEqual(tickets[0].category, "Network")
+            self.assertEqual(tickets[0].issue_type, "incident")
 
     def test_sn_status_recognition(self):
         config = _servicenow_config()
