@@ -334,11 +334,16 @@ _DATE_FORMATS = [
     "%Y-%m-%dT%H:%M:%S.%f",
     "%Y-%m-%dT%H:%M:%S",
     "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
     "%Y-%m-%d",
     "%d/%m/%Y %H:%M",
     "%d/%m/%Y",
     "%m/%d/%Y %H:%M",
     "%m/%d/%Y",
+    # US short formats (M/D/YY) — common in ServiceNow exports
+    "%m/%d/%y %H:%M",
+    "%m/%d/%y %I:%M %p",
+    "%m/%d/%y",
 ]
 
 
@@ -549,13 +554,22 @@ def _find_work_notes_columns(headers: List[str]) -> List[int]:
 
 
 def _read_file(path: Path) -> str:
-    """Read a file trying UTF-8 first, falling back to cp1252 for Windows exports."""
-    for enc in ("utf-8-sig", "cp1252", "latin-1"):
+    """Read a file trying UTF-8 first, falling back to cp1252 for Windows exports.
+
+    Handles the edge case where a file has a UTF-8 BOM but cp1252 body content
+    (common with ServiceNow/Windows exports that contain special characters).
+    """
+    # Read raw bytes once
+    raw = path.read_bytes()
+    # Strip UTF-8 BOM if present, regardless of actual encoding
+    if raw[:3] == b"\xef\xbb\xbf":
+        raw = raw[3:]
+    for enc in ("utf-8", "cp1252", "latin-1"):
         try:
-            return path.read_text(encoding=enc)
+            return raw.decode(enc)
         except (UnicodeDecodeError, ValueError):
             continue
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    return raw.decode("utf-8", errors="replace")
 
 
 def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> List[JiraTicket]:
@@ -664,8 +678,26 @@ def _parse_csv(filepath: str, config: SourceConfig, verbose: bool = False) -> Li
 
     if verbose:
         print(f"Parsed {len(tickets)} tickets from {filepath} (source: {config.display_name})")
-        print(f"  Columns found: {', '.join(c for c, indices in lookup.items() if indices)}")
-        print(f"  Comment columns: {len(comment_cols)}")
+        mapped = {c: indices for c, indices in lookup.items() if indices}
+        unmapped = [c for c, indices in lookup.items() if not indices]
+        print(f"  Columns mapped ({len(mapped)}): {', '.join(sorted(mapped))}")
+        if unmapped:
+            print(f"  Columns NOT mapped: {', '.join(sorted(unmapped))}")
+        print(f"  Comment/work-notes columns: {len(comment_cols)}")
+        print(f"  CSV headers (first 5): {headers[:5]}")
+        # Show sample data from first ticket for key diagnostic fields
+        if tickets:
+            t0 = tickets[0]
+            print(f"  Sample ticket: key={t0.key!r}, status={t0.status!r}, "
+                  f"created={t0.created}, assignee={t0.assignee!r}")
+            if is_sn:
+                print(f"    category={t0.category!r}, assignment_group={t0.assignment_group!r}, "
+                      f"made_sla={t0.made_sla}, issue_type={t0.issue_type!r}")
+            # Show unique status values to diagnose open/closed classification
+            statuses = set(t.status for t in tickets if t.status)
+            print(f"  Unique status values ({len(statuses)}): {sorted(statuses)[:15]}")
+            created_count = sum(1 for t in tickets if t.created is not None)
+            print(f"  Tickets with created date: {created_count}/{len(tickets)}")
 
     return tickets
 
@@ -2293,6 +2325,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         config = _servicenow_config() if detected == "servicenow" else _jira_config()
         if args.verbose:
             print(f"Auto-detected source: {config.display_name}")
+            lower = {h.strip().lower() for h in headers}
+            jira_indicators = {"issue key", "issue_key", "sprint", "epic link", "epic_link",
+                               "story points", "story_points", "issue type", "issuetype",
+                               "fix version/s"}
+            sn_indicators = {"number", "opened at", "opened_at", "assignment group",
+                             "assignment_group", "made sla", "made_sla", "short description",
+                             "short_description", "configuration item", "configuration_item",
+                             "cmdb_ci", "contact type", "contact_type", "opened by",
+                             "opened_by", "caller_id", "resolved at", "resolved_at",
+                             "reassignment count", "reassignment_count", "incident_state",
+                             "sys_class_name", "sys_created_on", "sys_updated_on",
+                             "service_offering", "business_service"}
+            j_hits = sorted(ind for ind in jira_indicators if ind in lower)
+            s_hits = sorted(ind for ind in sn_indicators if ind in lower)
+            j_cf = sum(1 for h in lower if h.startswith("custom field"))
+            print(f"  Jira score: {len(j_hits) + j_cf} (headers: {j_hits}, custom fields: {j_cf})")
+            print(f"  ServiceNow score: {len(s_hits)} (headers: {s_hits[:10]}{'...' if len(s_hits) > 10 else ''})")
+            print(f"  First header: {headers[0]!r}")
     elif args.source == "servicenow":
         config = _servicenow_config()
     else:
