@@ -19,7 +19,9 @@ from jira_dashboard import (
     _build_alias_lookup,
     _extract_comments,
     _find_comment_columns,
+    _is_blocked,
     _is_open,
+    _split_csv_field,
     compute_dashboard_data,
     format_duration,
     generate_html,
@@ -568,6 +570,301 @@ class TestEndToEnd(unittest.TestCase):
         from jira_dashboard import _auto_title
         title = _auto_title([], "My Custom Title")
         self.assertEqual(title, "My Custom Title")
+
+
+class TestIsBlocked(unittest.TestCase):
+    def test_blocked_statuses(self):
+        for s in ["Blocked", "On Hold", "Waiting", "Impediment"]:
+            self.assertTrue(_is_blocked(s), f"{s} should be blocked")
+
+    def test_non_blocked_statuses(self):
+        for s in ["Open", "In Progress", "Done", "To Do"]:
+            self.assertFalse(_is_blocked(s), f"{s} should not be blocked")
+
+    def test_case_insensitive(self):
+        self.assertTrue(_is_blocked("BLOCKED"))
+        self.assertTrue(_is_blocked("on hold"))
+
+
+class TestSplitCsvField(unittest.TestCase):
+    def test_comma_separated(self):
+        self.assertEqual(_split_csv_field("a, b, c"), ["a", "b", "c"])
+
+    def test_empty(self):
+        self.assertEqual(_split_csv_field(""), [])
+
+    def test_single(self):
+        self.assertEqual(_split_csv_field("one"), ["one"])
+
+
+class TestNewMetrics(unittest.TestCase):
+    """Tests for all new enhancement metrics."""
+
+    def _make_ticket(self, key="T-1", status="Open", created_days_ago=10,
+                     resolved_days_ago=None, due_days_from_now=None,
+                     last_comment_days_ago=None, issue_type="Task",
+                     priority="Medium", assignee="Alice", reporter="Carol",
+                     story_points=None, epic_link="", sprint="",
+                     labels="", components="",
+                     original_estimate_secs=None, time_spent_secs=None):
+        now = datetime(2024, 6, 15)
+        t = JiraTicket()
+        t.key = key
+        t.summary = f"Ticket {key}"
+        t.status = status
+        t.assignee = assignee
+        t.reporter = reporter
+        t.priority = priority
+        t.issue_type = issue_type
+        t.created = now - timedelta(days=created_days_ago)
+        if resolved_days_ago is not None:
+            t.resolved = now - timedelta(days=resolved_days_ago)
+        if due_days_from_now is not None:
+            t.due_date = now + timedelta(days=due_days_from_now)
+        if last_comment_days_ago is not None:
+            t.last_comment_date = now - timedelta(days=last_comment_days_ago)
+            t.last_comment_text = "Some comment"
+        if story_points is not None:
+            t.story_points = story_points
+        t.epic_link = epic_link
+        t.sprint = sprint
+        t.labels = labels
+        t.components = components
+        if original_estimate_secs is not None:
+            t.original_estimate_secs = original_estimate_secs
+        if time_spent_secs is not None:
+            t.time_spent_secs = time_spent_secs
+        return t
+
+    def test_resolution_rate(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open"),
+            self._make_ticket("T-2", "Done"),
+            self._make_ticket("T-3", "Done"),
+            self._make_ticket("T-4", "Closed"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertAlmostEqual(data.resolution_rate, 75.0)
+
+    def test_avg_resolution_days(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Done", created_days_ago=20, resolved_days_ago=0),
+            self._make_ticket("T-2", "Done", created_days_ago=10, resolved_days_ago=0),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertAlmostEqual(data.avg_resolution_days, 15.0)
+
+    def test_unassigned_tickets(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", assignee="Unassigned"),
+            self._make_ticket("T-2", "Open", assignee=""),
+            self._make_ticket("T-3", "Open", assignee="Alice"),
+            self._make_ticket("T-4", "Done", assignee="Unassigned"),  # closed, not counted
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertEqual(data.unassigned_tickets, 2)
+
+    def test_blocked_tickets(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Blocked"),
+            self._make_ticket("T-2", "On Hold"),
+            self._make_ticket("T-3", "Open"),
+            self._make_ticket("T-4", "Done"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertEqual(data.blocked_tickets, 2)
+
+    def test_story_points_totals(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", story_points=5.0),
+            self._make_ticket("T-2", "Open", story_points=3.0),
+            self._make_ticket("T-3", "Done", story_points=8.0),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertAlmostEqual(data.total_story_points, 16.0)
+        self.assertAlmostEqual(data.open_story_points, 8.0)
+
+    def test_created_by_month(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", created_days_ago=30),   # ~May 2024
+            self._make_ticket("T-2", "Open", created_days_ago=10),   # ~Jun 2024
+            self._make_ticket("T-3", "Open", created_days_ago=5),    # ~Jun 2024
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertIn("2024-06", data.created_by_month)
+        self.assertEqual(data.created_by_month["2024-06"], 2)
+
+    def test_resolved_by_month(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Done", created_days_ago=30, resolved_days_ago=5),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertIn("2024-06", data.resolved_by_month)
+        self.assertEqual(data.resolved_by_month["2024-06"], 1)
+
+    def test_epic_progress(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", epic_link="EPIC-1", story_points=3.0),
+            self._make_ticket("T-2", "Done", epic_link="EPIC-1", story_points=5.0),
+            self._make_ticket("T-3", "Open", epic_link="EPIC-2"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        by_epic = {e["epic"]: e for e in data.epic_progress}
+        self.assertIn("EPIC-1", by_epic)
+        self.assertIn("EPIC-2", by_epic)
+        self.assertEqual(by_epic["EPIC-1"]["total"], 2)
+        self.assertEqual(by_epic["EPIC-1"]["closed"], 1)
+        self.assertEqual(by_epic["EPIC-1"]["open"], 1)
+        self.assertAlmostEqual(by_epic["EPIC-1"]["pct_done"], 50.0)
+        self.assertAlmostEqual(by_epic["EPIC-1"]["story_points"], 8.0)
+
+    def test_epic_progress_empty(self):
+        now = datetime(2024, 6, 15)
+        tickets = [self._make_ticket("T-1", "Open")]  # no epic_link
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertEqual(len(data.epic_progress), 0)
+
+    def test_sprint_progress(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", sprint="Sprint 1", story_points=3.0),
+            self._make_ticket("T-2", "Done", sprint="Sprint 1", story_points=5.0),
+            self._make_ticket("T-3", "Open", sprint="Sprint 2"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        by_sprint = {s["sprint"]: s for s in data.sprint_progress}
+        self.assertIn("Sprint 1", by_sprint)
+        self.assertIn("Sprint 2", by_sprint)
+        self.assertEqual(by_sprint["Sprint 1"]["total"], 2)
+        self.assertEqual(by_sprint["Sprint 1"]["closed"], 1)
+
+    def test_component_counts(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", components="Backend, API"),
+            self._make_ticket("T-2", "Open", components="Backend"),
+            self._make_ticket("T-3", "Done", components="Frontend"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertEqual(data.component_counts["Backend"], 2)
+        self.assertEqual(data.component_counts["API"], 1)
+        self.assertEqual(data.component_counts["Frontend"], 1)
+
+    def test_label_counts(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", labels="bug, urgent"),
+            self._make_ticket("T-2", "Open", labels="bug"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertEqual(data.label_counts["bug"], 2)
+        self.assertEqual(data.label_counts["urgent"], 1)
+
+    def test_estimation_accuracy(self):
+        now = datetime(2024, 6, 15)
+        # 8h estimated, 10h actual for a Bug
+        tickets = [
+            self._make_ticket("T-1", "Done", issue_type="Bug",
+                              created_days_ago=10, resolved_days_ago=0,
+                              original_estimate_secs=8 * 3600,
+                              time_spent_secs=10 * 3600),
+            self._make_ticket("T-2", "Done", issue_type="Bug",
+                              created_days_ago=5, resolved_days_ago=0,
+                              original_estimate_secs=4 * 3600,
+                              time_spent_secs=6 * 3600),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertTrue(len(data.estimation_accuracy) > 0)
+        bug_row = [e for e in data.estimation_accuracy if e["type"] == "Bug"]
+        self.assertEqual(len(bug_row), 1)
+        self.assertEqual(bug_row[0]["count"], 2)
+        self.assertIn("accuracy_pct", bug_row[0])
+
+    def test_estimation_accuracy_empty(self):
+        now = datetime(2024, 6, 15)
+        tickets = [self._make_ticket("T-1", "Open")]  # no estimates
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertEqual(len(data.estimation_accuracy), 0)
+
+    def test_avg_resolution_by_priority(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Done", priority="High",
+                              created_days_ago=10, resolved_days_ago=0),
+            self._make_ticket("T-2", "Done", priority="Low",
+                              created_days_ago=20, resolved_days_ago=0),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertIn("High", data.avg_resolution_by_priority)
+        self.assertAlmostEqual(data.avg_resolution_by_priority["High"], 10.0)
+        self.assertAlmostEqual(data.avg_resolution_by_priority["Low"], 20.0)
+
+    def test_reporter_assignee_matrix(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", reporter="Carol", assignee="Alice"),
+            self._make_ticket("T-2", "Open", reporter="Carol", assignee="Alice"),
+            self._make_ticket("T-3", "Open", reporter="Carol", assignee="Bob"),
+            self._make_ticket("T-4", "Done", reporter="Dave", assignee="Alice"),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        self.assertTrue(len(data.reporter_assignee_matrix) > 0)
+        ca = [r for r in data.reporter_assignee_matrix
+              if r["reporter"] == "Carol" and r["assignee"] == "Alice"]
+        self.assertEqual(len(ca), 1)
+        self.assertEqual(ca[0]["count"], 2)
+
+    def test_assignee_breakdown_story_points(self):
+        now = datetime(2024, 6, 15)
+        tickets = [
+            self._make_ticket("T-1", "Open", assignee="Alice", story_points=5.0),
+            self._make_ticket("T-2", "Done", assignee="Alice", story_points=3.0),
+        ]
+        data = compute_dashboard_data(tickets, now=now)
+        by_name = {r["assignee"]: r for r in data.assignee_breakdown}
+        self.assertIn("story_points", by_name["Alice"])
+        self.assertAlmostEqual(by_name["Alice"]["story_points"], 8.0)
+
+
+class TestNewHTMLSections(unittest.TestCase):
+    """Tests that new HTML sections appear in generated output."""
+
+    def test_new_sections_present(self):
+        tickets = [
+            JiraTicket(key="T-1", summary="Test", status="Open",
+                       priority="High", issue_type="Bug",
+                       epic_link="EPIC-1", sprint="Sprint 1",
+                       components="Backend", labels="urgent"),
+        ]
+        tickets[0].created = datetime(2024, 1, 15)
+        data = compute_dashboard_data(tickets)
+        html_out = generate_html(tickets, data)
+        # Check for new section IDs / headings
+        self.assertIn("Created vs Resolved", html_out)
+        self.assertIn("Epic Progress", html_out)
+        self.assertIn("Sprint Progress", html_out)
+        self.assertIn("Component", html_out)
+        self.assertIn("Label", html_out)
+        self.assertIn("Priority SLA", html_out)
+        self.assertIn("Estimation Accuracy", html_out)
+        self.assertIn("Reporter", html_out)
+
+    def test_summary_cards_expanded(self):
+        tickets = [JiraTicket(key="T-1", summary="Test", status="Open")]
+        data = compute_dashboard_data(tickets)
+        html_out = generate_html(tickets, data)
+        # Check for new summary card labels
+        self.assertIn("Resolution Rate", html_out)
+        self.assertIn("Unassigned", html_out)
+        self.assertIn("Story Points", html_out)
 
 
 class TestCommentExtraction(unittest.TestCase):

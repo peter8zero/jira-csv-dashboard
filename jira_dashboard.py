@@ -83,20 +83,20 @@ def _find_comment_columns(headers: List[str]) -> List[int]:
 # ---------------------------------------------------------------------------
 
 _DATE_FORMATS = [
-    "%d/%b/%y %I:%M %p",    # 01/Jan/24 09:30 AM
-    "%d/%b/%y %H:%M",       # 01/Jan/24 09:30
-    "%d/%b/%Y %I:%M %p",    # 01/Jan/2024 09:30 AM
-    "%d/%b/%Y %H:%M",       # 01/Jan/2024 09:30
-    "%Y-%m-%dT%H:%M:%S.%f%z",  # ISO 8601 with tz
-    "%Y-%m-%dT%H:%M:%S%z",     # ISO 8601 with tz no ms
-    "%Y-%m-%dT%H:%M:%S.%f",    # ISO 8601 no tz
-    "%Y-%m-%dT%H:%M:%S",       # ISO 8601 no tz no ms
-    "%Y-%m-%d %H:%M:%S",       # 2024-01-15 09:30:00
-    "%Y-%m-%d",                 # 2024-01-15
-    "%d/%m/%Y %H:%M",          # 01/01/2024 09:30
-    "%d/%m/%Y",                 # 01/01/2024
-    "%m/%d/%Y %H:%M",          # 01/15/2024 09:30
-    "%m/%d/%Y",                 # 01/15/2024
+    "%d/%b/%y %I:%M %p",
+    "%d/%b/%y %H:%M",
+    "%d/%b/%Y %I:%M %p",
+    "%d/%b/%Y %H:%M",
+    "%Y-%m-%dT%H:%M:%S.%f%z",
+    "%Y-%m-%dT%H:%M:%S%z",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d",
+    "%d/%m/%Y %H:%M",
+    "%d/%m/%Y",
+    "%m/%d/%Y %H:%M",
+    "%m/%d/%Y",
 ]
 
 
@@ -108,7 +108,6 @@ def parse_date(value: str) -> Optional[datetime]:
     for fmt in _DATE_FORMATS:
         try:
             dt = datetime.strptime(value, fmt)
-            # Strip timezone info for consistent comparisons
             return dt.replace(tzinfo=None)
         except ValueError:
             continue
@@ -126,7 +125,6 @@ def parse_duration_seconds(value: str) -> Optional[int]:
     if not value or not value.strip():
         return None
     value = value.strip()
-    # Try plain numeric (seconds)
     try:
         return int(float(value))
     except ValueError:
@@ -165,6 +163,13 @@ def format_duration(seconds: Optional[int]) -> str:
     if minutes:
         parts.append(f"{minutes}m")
     return " ".join(parts) if parts else "< 1m"
+
+
+def _format_days(days: float) -> str:
+    """Format days as a readable string."""
+    if days < 1:
+        return "< 1d"
+    return f"{days:.1f}d"
 
 
 # ---------------------------------------------------------------------------
@@ -206,13 +211,9 @@ class JiraTicket:
 # ---------------------------------------------------------------------------
 
 def _extract_comments(row: List[str], comment_cols: List[int]) -> Tuple[Optional[datetime], str]:
-    """Extract latest comment date and text from comment columns.
-
-    Jira exports comments in various formats. Try to find the most recent one.
-    """
+    """Extract latest comment date and text from comment columns."""
     latest_date: Optional[datetime] = None
     latest_text = ""
-    # Jira comment format: "DD/Mon/YY HH:MM AM;username;comment text"
     comment_date_re = re.compile(r"^(\d{1,2}/\w{3}/\d{2,4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)?)")
     for ci in comment_cols:
         if ci >= len(row):
@@ -220,13 +221,11 @@ def _extract_comments(row: List[str], comment_cols: List[int]) -> Tuple[Optional
         val = row[ci].strip()
         if not val:
             continue
-        # Try splitting by semicolons (Jira format)
         parts = val.split(";")
         if len(parts) >= 3:
             d = parse_date(parts[0].strip())
             text = parts[-1].strip()
         else:
-            # Try to extract date from start
             dm = comment_date_re.match(val)
             if dm:
                 d = parse_date(dm.group(1))
@@ -297,10 +296,8 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
         t.original_estimate_secs = parse_duration_seconds(_get(row, "original_estimate"))
         t.time_spent_secs = parse_duration_seconds(_get(row, "time_spent"))
         t.remaining_estimate_secs = parse_duration_seconds(_get(row, "remaining_estimate"))
-
         t.last_comment_date, t.last_comment_text = _extract_comments(row, comment_cols)
 
-        # Store all raw fields
         for i, h in enumerate(headers):
             if i < len(row):
                 t.raw_fields[h] = row[i]
@@ -321,9 +318,11 @@ def parse_jira_csv(filepath: str, verbose: bool = False) -> List[JiraTicket]:
 
 _OPEN_STATUSES = {"open", "to do", "todo", "in progress", "in review", "reopened",
                   "backlog", "selected for development", "blocked", "waiting",
-                  "new", "active", "in development", "in testing", "ready for review"}
+                  "new", "active", "in development", "in testing", "ready for review",
+                  "in uat"}
 _CLOSED_STATUSES = {"done", "closed", "resolved", "complete", "completed", "cancelled",
                     "won't do", "wontdo", "duplicate", "rejected"}
+_BLOCKED_STATUSES = {"blocked", "waiting", "on hold", "impediment"}
 
 
 def _is_open(status: str) -> bool:
@@ -332,28 +331,67 @@ def _is_open(status: str) -> bool:
         return False
     if sl in _OPEN_STATUSES:
         return True
-    # Default: treat as open if no resolution-like word
     return True
+
+
+def _is_blocked(status: str) -> bool:
+    return status.strip().lower() in _BLOCKED_STATUSES
+
+
+def _split_csv_field(value: str) -> List[str]:
+    """Split a comma/semicolon-separated Jira field into individual values."""
+    if not value.strip():
+        return []
+    items = []
+    for item in re.split(r"[,;]+", value):
+        item = item.strip()
+        if item:
+            items.append(item)
+    return items
 
 
 @dataclass
 class DashboardData:
+    # Summary cards
     total_tickets: int = 0
     open_tickets: int = 0
     closed_tickets: int = 0
     avg_age_open_days: float = 0.0
     overdue_tickets: int = 0
     stale_tickets: int = 0
+    resolution_rate: float = 0.0
+    avg_resolution_days: float = 0.0
+    unassigned_tickets: int = 0
+    blocked_tickets: int = 0
+    total_story_points: float = 0.0
+    open_story_points: float = 0.0
+
+    # Charts
     status_counts: Dict[str, int] = field(default_factory=dict)
     assignee_counts: Dict[str, int] = field(default_factory=dict)
     priority_counts: Dict[str, int] = field(default_factory=dict)
     type_counts: Dict[str, int] = field(default_factory=dict)
+    component_counts: Dict[str, int] = field(default_factory=dict)
+    label_counts: Dict[str, int] = field(default_factory=dict)
+
+    # Trend
+    created_by_month: Dict[str, int] = field(default_factory=dict)
+    resolved_by_month: Dict[str, int] = field(default_factory=dict)
+
+    # Tables
     staleness_rows: List[Dict[str, Any]] = field(default_factory=list)
     avg_resolution_by_type: Dict[str, float] = field(default_factory=dict)
+    avg_resolution_by_priority: Dict[str, float] = field(default_factory=dict)
     age_buckets: Dict[str, int] = field(default_factory=dict)
     oldest_open: List[Dict[str, Any]] = field(default_factory=list)
     assignee_breakdown: List[Dict[str, Any]] = field(default_factory=list)
     reporter_breakdown: List[Dict[str, Any]] = field(default_factory=list)
+    epic_progress: List[Dict[str, Any]] = field(default_factory=list)
+    sprint_progress: List[Dict[str, Any]] = field(default_factory=list)
+    estimation_accuracy: List[Dict[str, Any]] = field(default_factory=list)
+    reporter_assignee_matrix: List[Dict[str, Any]] = field(default_factory=list)
+
+    # Full table
     all_tickets_json: str = "[]"
     all_headers: List[str] = field(default_factory=list)
 
@@ -368,9 +406,31 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
     d.total_tickets = len(tickets)
 
     open_ages: List[float] = []
+    all_resolution_days: List[float] = []
     resolution_times_by_type: Dict[str, List[float]] = defaultdict(list)
+    resolution_times_by_priority: Dict[str, List[float]] = defaultdict(list)
     bucket_labels = ["< 7d", "7–14d", "14–30d", "30–60d", "60–90d", "90d+"]
     d.age_buckets = {b: 0 for b in bucket_labels}
+
+    # Epic/Sprint tracking
+    epic_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "total": 0, "open": 0, "closed": 0, "story_points": 0.0,
+    })
+    sprint_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
+        "total": 0, "open": 0, "closed": 0, "story_points": 0.0,
+    })
+
+    # Estimation accuracy tracking
+    estimate_by_type: Dict[str, Dict[str, List[int]]] = defaultdict(lambda: {
+        "estimated": [], "actual": [],
+    })
+
+    # Reporter-Assignee flow
+    ra_flow: Dict[Tuple[str, str], int] = defaultdict(int)
+
+    # Component/Label counting
+    component_counter: Dict[str, int] = defaultdict(int)
+    label_counter: Dict[str, int] = defaultdict(int)
 
     for t in tickets:
         is_open = _is_open(t.status)
@@ -378,6 +438,20 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
             d.open_tickets += 1
         else:
             d.closed_tickets += 1
+
+        # Blocked
+        if is_open and _is_blocked(t.status):
+            d.blocked_tickets += 1
+
+        # Unassigned
+        if is_open and t.assignee in ("Unassigned", ""):
+            d.unassigned_tickets += 1
+
+        # Story points
+        if t.story_points is not None:
+            d.total_story_points += t.story_points
+            if is_open:
+                d.open_story_points += t.story_points
 
         # Status
         status_display = t.status or "Unknown"
@@ -395,11 +469,26 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
         if t.issue_type:
             d.type_counts[t.issue_type] = d.type_counts.get(t.issue_type, 0) + 1
 
+        # Components
+        for comp in _split_csv_field(t.components):
+            component_counter[comp] += 1
+
+        # Labels
+        for lbl in _split_csv_field(t.labels):
+            label_counter[lbl] += 1
+
+        # Created/Resolved trend (monthly)
+        if t.created:
+            month_key = t.created.strftime("%Y-%m")
+            d.created_by_month[month_key] = d.created_by_month.get(month_key, 0) + 1
+        if t.resolved:
+            month_key = t.resolved.strftime("%Y-%m")
+            d.resolved_by_month[month_key] = d.resolved_by_month.get(month_key, 0) + 1
+
         # Age of open tickets
         if is_open and t.created:
             age_days = (now - t.created).total_seconds() / 86400
             open_ages.append(age_days)
-            # Buckets
             if age_days < 7:
                 d.age_buckets["< 7d"] += 1
             elif age_days < 14:
@@ -426,7 +515,6 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
             if days_since is not None and days_since > stale_days:
                 d.stale_tickets += 1
             elif days_since is None and t.created:
-                # No activity info - check created date
                 created_days = (now - t.created).total_seconds() / 86400
                 if created_days > stale_days:
                     d.stale_tickets += 1
@@ -447,14 +535,71 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
         # Resolution time
         if not is_open and t.created and t.resolved:
             res_days = (t.resolved - t.created).total_seconds() / 86400
+            all_resolution_days.append(res_days)
             itype = t.issue_type or "Unknown"
             resolution_times_by_type[itype].append(res_days)
+            if t.priority:
+                resolution_times_by_priority[t.priority].append(res_days)
 
-    # Averages
+        # Epic progress
+        if t.epic_link:
+            epic_stats[t.epic_link]["total"] += 1
+            if is_open:
+                epic_stats[t.epic_link]["open"] += 1
+            else:
+                epic_stats[t.epic_link]["closed"] += 1
+            if t.story_points:
+                epic_stats[t.epic_link]["story_points"] += t.story_points
+
+        # Sprint progress
+        if t.sprint:
+            sprint_stats[t.sprint]["total"] += 1
+            if is_open:
+                sprint_stats[t.sprint]["open"] += 1
+            else:
+                sprint_stats[t.sprint]["closed"] += 1
+            if t.story_points:
+                sprint_stats[t.sprint]["story_points"] += t.story_points
+
+        # Estimation accuracy
+        if t.original_estimate_secs is not None and t.time_spent_secs is not None:
+            itype = t.issue_type or "Unknown"
+            estimate_by_type[itype]["estimated"].append(t.original_estimate_secs)
+            estimate_by_type[itype]["actual"].append(t.time_spent_secs)
+
+        # Reporter-Assignee flow
+        reporter = t.reporter or "Unknown"
+        ra_flow[(reporter, t.assignee)] += 1
+
+    # --- Aggregations ---
+
+    # Summary values
     d.avg_age_open_days = round(sum(open_ages) / len(open_ages), 1) if open_ages else 0.0
+    d.resolution_rate = round((d.closed_tickets / d.total_tickets * 100), 1) if d.total_tickets else 0.0
+    d.avg_resolution_days = round(sum(all_resolution_days) / len(all_resolution_days), 1) if all_resolution_days else 0.0
+    d.total_story_points = round(d.total_story_points, 1)
+    d.open_story_points = round(d.open_story_points, 1)
 
+    # Resolution by type
     for itype, times in resolution_times_by_type.items():
         d.avg_resolution_by_type[itype] = round(sum(times) / len(times), 1)
+
+    # Resolution by priority
+    for pri, times in resolution_times_by_priority.items():
+        d.avg_resolution_by_priority[pri] = round(sum(times) / len(times), 1)
+
+    # Component/Label counts (sorted by count desc)
+    d.component_counts = dict(sorted(component_counter.items(), key=lambda x: -x[1]))
+    d.label_counts = dict(sorted(label_counter.items(), key=lambda x: -x[1]))
+
+    # Ensure created_by_month and resolved_by_month cover the same date range
+    all_months = sorted(set(list(d.created_by_month.keys()) + list(d.resolved_by_month.keys())))
+    for m in all_months:
+        d.created_by_month.setdefault(m, 0)
+        d.resolved_by_month.setdefault(m, 0)
+    # Re-sort by month key
+    d.created_by_month = dict(sorted(d.created_by_month.items()))
+    d.resolved_by_month = dict(sorted(d.resolved_by_month.items()))
 
     # Sort staleness rows (most stale first)
     d.staleness_rows.sort(key=lambda r: -r["days_since"])
@@ -475,19 +620,20 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
     open_with_age.sort(key=lambda r: -r["age_days"])
     d.oldest_open = open_with_age[:10]
 
-    # Assignee breakdown
+    # Assignee breakdown (with story points)
     assignee_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
         "total": 0, "open": 0, "closed": 0, "overdue": 0, "stale": 0,
-        "open_age_sum": 0.0, "open_count_for_age": 0,
+        "open_age_sum": 0.0, "open_count_for_age": 0, "story_points": 0.0,
     })
     reporter_stats: Dict[str, Dict[str, Any]] = defaultdict(lambda: {
         "total": 0, "open": 0, "closed": 0, "overdue": 0,
     })
     for t in tickets:
         is_open_t = _is_open(t.status)
-        # Assignee
         a = t.assignee
         assignee_stats[a]["total"] += 1
+        if t.story_points:
+            assignee_stats[a]["story_points"] += t.story_points
         if is_open_t:
             assignee_stats[a]["open"] += 1
             if t.created:
@@ -506,7 +652,6 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
                     assignee_stats[a]["stale"] += 1
         else:
             assignee_stats[a]["closed"] += 1
-        # Reporter
         r = t.reporter or "Unknown"
         reporter_stats[r]["total"] += 1
         if is_open_t:
@@ -522,6 +667,7 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
             "assignee": name, "total": s["total"], "open": s["open"],
             "closed": s["closed"], "avg_age": avg_age,
             "overdue": s["overdue"], "stale": s["stale"],
+            "story_points": round(s["story_points"], 1),
         })
     for name, s in sorted(reporter_stats.items(), key=lambda x: -x[1]["total"]):
         d.reporter_breakdown.append({
@@ -529,9 +675,48 @@ def compute_dashboard_data(tickets: List[JiraTicket], stale_days: int = 14,
             "closed": s["closed"], "overdue": s["overdue"],
         })
 
+    # Epic progress
+    for epic, s in sorted(epic_stats.items(), key=lambda x: -x[1]["total"]):
+        pct = round(s["closed"] / s["total"] * 100, 1) if s["total"] else 0
+        d.epic_progress.append({
+            "epic": epic, "total": s["total"], "open": s["open"],
+            "closed": s["closed"], "pct_done": pct,
+            "story_points": round(s["story_points"], 1),
+        })
+
+    # Sprint progress
+    for sprint, s in sorted(sprint_stats.items(), key=lambda x: -x[1]["total"]):
+        pct = round(s["closed"] / s["total"] * 100, 1) if s["total"] else 0
+        d.sprint_progress.append({
+            "sprint": sprint, "total": s["total"], "open": s["open"],
+            "closed": s["closed"], "pct_done": pct,
+            "story_points": round(s["story_points"], 1),
+        })
+
+    # Estimation accuracy
+    for itype, data_est in sorted(estimate_by_type.items()):
+        estimated = data_est["estimated"]
+        actual = data_est["actual"]
+        avg_est = sum(estimated) / len(estimated) if estimated else 0
+        avg_act = sum(actual) / len(actual) if actual else 0
+        accuracy = round((avg_act / avg_est * 100), 1) if avg_est > 0 else 0
+        d.estimation_accuracy.append({
+            "type": itype,
+            "count": len(estimated),
+            "avg_estimated": format_duration(int(avg_est)),
+            "avg_actual": format_duration(int(avg_act)),
+            "accuracy_pct": accuracy,
+        })
+
+    # Reporter-Assignee matrix (top 20)
+    ra_sorted = sorted(ra_flow.items(), key=lambda x: -x[1])[:20]
+    for (reporter, assignee), count in ra_sorted:
+        d.reporter_assignee_matrix.append({
+            "reporter": reporter, "assignee": assignee, "count": count,
+        })
+
     # Full ticket table data
     all_rows = []
-    # Collect all unique raw field headers
     all_headers_set: Dict[str, None] = {}
     for t in tickets:
         for h in t.raw_fields:
@@ -580,16 +765,29 @@ def generate_html(tickets: List[JiraTicket], data: DashboardData,
     assignee_data = json.dumps(dict(sorted(data.assignee_counts.items(), key=lambda x: -x[1])[:15]))
     priority_data = json.dumps(data.priority_counts)
     type_data = json.dumps(data.type_counts)
+    component_data = json.dumps(dict(list(data.component_counts.items())[:15]))
+    label_data = json.dumps(dict(list(data.label_counts.items())[:15]))
+    created_month_json = json.dumps(data.created_by_month)
+    resolved_month_json = json.dumps(data.resolved_by_month)
     staleness_json = json.dumps(data.staleness_rows)
     resolution_json = json.dumps(data.avg_resolution_by_type)
+    resolution_priority_json = json.dumps(data.avg_resolution_by_priority)
     age_buckets_json = json.dumps(data.age_buckets)
     oldest_json = json.dumps(data.oldest_open)
     assignee_breakdown_json = json.dumps(data.assignee_breakdown)
     reporter_breakdown_json = json.dumps(data.reporter_breakdown)
+    epic_json = json.dumps(data.epic_progress)
+    sprint_json = json.dumps(data.sprint_progress)
+    estimation_json = json.dumps(data.estimation_accuracy)
+    ra_matrix_json = json.dumps(data.reporter_assignee_matrix)
     headers_json = json.dumps(data.all_headers)
 
     title_escaped = html.escape(title)
     source_escaped = html.escape(source_file)
+
+    # Story points display
+    sp_display = f"{data.total_story_points}" if data.total_story_points else "—"
+    sp_sub = f"{data.open_story_points} open" if data.total_story_points else "no data"
 
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="dark">
@@ -648,16 +846,17 @@ body {{
 }}
 .theme-toggle:hover {{ background: var(--xps-blue); color: #fff; }}
 .container {{ max-width: 1400px; margin: 0 auto; padding: 20px; }}
-.cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }}
+.cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 24px; }}
 .card {{
     background: var(--xps-card-bg); border: 1px solid var(--xps-border);
-    border-radius: 10px; padding: 20px; text-align: center;
+    border-radius: 10px; padding: 16px; text-align: center;
 }}
-.card-value {{ font-size: 2rem; font-weight: 700; color: var(--xps-blue); }}
-.card-label {{ font-size: 0.85rem; color: var(--xps-text-muted); margin-top: 4px; }}
-.card-sub {{ font-size: 0.75rem; color: var(--xps-text-muted); }}
+.card-value {{ font-size: 1.8rem; font-weight: 700; color: var(--xps-blue); }}
+.card-label {{ font-size: 0.8rem; color: var(--xps-text-muted); margin-top: 4px; }}
+.card-sub {{ font-size: 0.7rem; color: var(--xps-text-muted); }}
 .card.danger .card-value {{ color: var(--xps-danger); }}
 .card.warning .card-value {{ color: var(--xps-warning); }}
+.card.success .card-value {{ color: var(--xps-success); }}
 .section {{
     background: var(--xps-card-bg); border: 1px solid var(--xps-border);
     border-radius: 10px; padding: 24px; margin-bottom: 24px;
@@ -667,7 +866,7 @@ body {{
     padding-bottom: 8px; border-bottom: 1px solid var(--xps-border);
     color: var(--xps-blue-light);
 }}
-.charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(400px, 1fr)); gap: 24px; margin-bottom: 24px; }}
+.charts-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 24px; margin-bottom: 24px; }}
 .chart-container {{
     background: var(--xps-card-bg); border: 1px solid var(--xps-border);
     border-radius: 10px; padding: 20px;
@@ -724,6 +923,20 @@ tr:hover {{ background: var(--xps-charcoal); }}
 .donut-legend-item {{ display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }}
 .donut-legend-swatch {{ width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }}
 .no-data {{ color: var(--xps-text-muted); text-align: center; padding: 30px; font-style: italic; }}
+.progress-bar-bg {{ width: 100%; height: 16px; background: var(--xps-charcoal); border-radius: 4px; overflow: hidden; }}
+.progress-bar-fill {{ height: 100%; background: var(--xps-success); border-radius: 4px; transition: width 0.3s; min-width: 2px; }}
+.trend-bar-group {{ display: flex; align-items: flex-end; gap: 2px; }}
+.trend-bar {{ min-width: 8px; border-radius: 2px 2px 0 0; }}
+.trend-container {{ overflow-x: auto; }}
+.trend-chart {{ display: flex; align-items: flex-end; gap: 8px; min-height: 150px; padding: 10px 0; }}
+.trend-month {{ display: flex; flex-direction: column; align-items: center; gap: 4px; }}
+.trend-month-label {{ font-size: 0.65rem; color: var(--xps-text-muted); white-space: nowrap; }}
+.trend-legend {{ display: flex; gap: 16px; margin-bottom: 8px; font-size: 0.8rem; }}
+.trend-legend-item {{ display: flex; align-items: center; gap: 4px; }}
+.trend-legend-swatch {{ width: 12px; height: 12px; border-radius: 2px; }}
+.accuracy-good {{ color: var(--xps-success); font-weight: 600; }}
+.accuracy-warn {{ color: var(--xps-warning); font-weight: 600; }}
+.accuracy-bad {{ color: var(--xps-danger); font-weight: 600; }}
 @media (max-width: 768px) {{
     .charts-grid {{ grid-template-columns: 1fr; }}
     .header {{ flex-direction: column; text-align: center; }}
@@ -746,28 +959,54 @@ tr:hover {{ background: var(--xps-charcoal); }}
 
 <div class="container">
 
-<!-- Summary Cards -->
+<!-- Summary Cards (8) -->
 <div class="cards">
     <div class="card">
         <div class="card-value">{data.total_tickets}</div>
         <div class="card-label">Total Tickets</div>
         <div class="card-sub">{data.open_tickets} open / {data.closed_tickets} closed</div>
     </div>
+    <div class="card {"success" if data.resolution_rate >= 80 else "warning" if data.resolution_rate >= 50 else ""}">
+        <div class="card-value">{data.resolution_rate}%</div>
+        <div class="card-label">Resolution Rate</div>
+        <div class="card-sub">{data.closed_tickets} resolved</div>
+    </div>
     <div class="card">
         <div class="card-value">{data.avg_age_open_days}</div>
         <div class="card-label">Avg Age (Open)</div>
         <div class="card-sub">days</div>
     </div>
+    <div class="card">
+        <div class="card-value">{data.avg_resolution_days}</div>
+        <div class="card-label">Avg Resolution</div>
+        <div class="card-sub">days to close</div>
+    </div>
     <div class="card {"danger" if data.overdue_tickets else ""}">
         <div class="card-value">{data.overdue_tickets}</div>
-        <div class="card-label">Overdue Tickets</div>
+        <div class="card-label">Overdue</div>
         <div class="card-sub">past due date</div>
     </div>
     <div class="card {"warning" if data.stale_tickets else ""}">
         <div class="card-value">{data.stale_tickets}</div>
-        <div class="card-label">Stale Tickets</div>
-        <div class="card-sub">no activity in {stale_days}+ days</div>
+        <div class="card-label">Stale</div>
+        <div class="card-sub">no activity {stale_days}+ days</div>
     </div>
+    <div class="card {"warning" if data.unassigned_tickets else ""}">
+        <div class="card-value">{data.unassigned_tickets}</div>
+        <div class="card-label">Unassigned</div>
+        <div class="card-sub">open, no owner</div>
+    </div>
+    <div class="card">
+        <div class="card-value">{sp_display}</div>
+        <div class="card-label">Story Points</div>
+        <div class="card-sub">{sp_sub}</div>
+    </div>
+</div>
+
+<!-- Created vs Resolved Trend -->
+<div class="section">
+    <h2>Created vs Resolved Trend</h2>
+    <div id="trend-chart"></div>
 </div>
 
 <!-- Charts -->
@@ -788,6 +1027,32 @@ tr:hover {{ background: var(--xps-charcoal); }}
         <h3>Issue Type Distribution</h3>
         <div id="chart-type"></div>
     </div>
+    <div class="chart-container">
+        <h3>Components</h3>
+        <div id="chart-components"></div>
+    </div>
+    <div class="chart-container">
+        <h3>Labels</h3>
+        <div id="chart-labels"></div>
+    </div>
+</div>
+
+<!-- Priority SLA -->
+<div class="section">
+    <h2>Priority SLA — Avg Resolution Time by Priority</h2>
+    <div id="priority-sla-chart"></div>
+</div>
+
+<!-- Epic Progress -->
+<div class="section">
+    <h2>Epic Progress</h2>
+    <div id="epic-progress"></div>
+</div>
+
+<!-- Sprint Progress -->
+<div class="section">
+    <h2>Sprint Progress</h2>
+    <div id="sprint-progress"></div>
 </div>
 
 <!-- Assignee Breakdown -->
@@ -800,6 +1065,12 @@ tr:hover {{ background: var(--xps-charcoal); }}
 <div class="section">
     <h2>Reporter Breakdown</h2>
     <div id="reporter-breakdown"></div>
+</div>
+
+<!-- Reporter → Assignee Flow -->
+<div class="section">
+    <h2>Reporter → Assignee Flow</h2>
+    <div id="ra-matrix"></div>
 </div>
 
 <!-- Staleness Table -->
@@ -824,6 +1095,12 @@ tr:hover {{ background: var(--xps-charcoal); }}
     </div>
 </div>
 
+<!-- Estimation Accuracy -->
+<div class="section">
+    <h2>Estimation Accuracy</h2>
+    <div id="estimation-accuracy"></div>
+</div>
+
 <!-- Oldest Open -->
 <div class="section">
     <h2>Top 10 Oldest Open Tickets</h2>
@@ -846,12 +1123,21 @@ const statusData = {status_data};
 const assigneeData = {assignee_data};
 const priorityData = {priority_data};
 const typeData = {type_data};
+const componentData = {component_data};
+const labelData = {label_data};
+const createdByMonth = {created_month_json};
+const resolvedByMonth = {resolved_month_json};
 const stalenessData = {staleness_json};
 const resolutionData = {resolution_json};
+const resolutionPriorityData = {resolution_priority_json};
 const ageBucketsData = {age_buckets_json};
 const oldestData = {oldest_json};
 const assigneeBreakdown = {assignee_breakdown_json};
 const reporterBreakdown = {reporter_breakdown_json};
+const epicProgress = {epic_json};
+const sprintProgress = {sprint_json};
+const estimationData = {estimation_json};
+const raMatrix = {ra_matrix_json};
 const allTickets = {data.all_tickets_json};
 const allHeaders = {headers_json};
 
@@ -865,7 +1151,7 @@ function toggleTheme() {{
 const statusColours = {{
     'To Do': '#8A9499', 'Open': '#8A9499', 'Backlog': '#8A9499', 'New': '#8A9499',
     'In Progress': '#4A9FD9', 'In Review': '#6BB3E3', 'In Development': '#4A9FD9',
-    'In Testing': '#6BB3E3', 'Active': '#4A9FD9',
+    'In Testing': '#6BB3E3', 'Active': '#4A9FD9', 'In UAT': '#6BB3E3',
     'Done': '#4CAF50', 'Closed': '#4CAF50', 'Resolved': '#4CAF50', 'Complete': '#4CAF50',
     'Blocked': '#F44336', 'Waiting': '#FF9800', 'Reopened': '#FF9800',
 }};
@@ -934,7 +1220,6 @@ function renderDonut(containerId, data, colourMap) {{
     }}
     svg += `<text x="${{cx}}" y="${{cy}}" text-anchor="middle" dominant-baseline="central" fill="var(--xps-text)" font-size="18" font-weight="700">${{total}}</text>`;
     svg += '</svg>';
-    // Legend
     let legend = '<div class="donut-legend">';
     i = 0;
     for (const [label, count] of Object.entries(data)) {{
@@ -947,6 +1232,56 @@ function renderDonut(containerId, data, colourMap) {{
     el.innerHTML = `<div class="donut-container">${{svg}}${{legend}}</div>`;
 }}
 
+// Created vs Resolved trend chart
+function renderTrend() {{
+    const el = document.getElementById('trend-chart');
+    const months = Object.keys(createdByMonth);
+    if (months.length === 0) {{ el.innerHTML = '<div class="no-data">No date data available</div>'; return; }}
+    const allVals = [...Object.values(createdByMonth), ...Object.values(resolvedByMonth)];
+    const max = Math.max(...allVals, 1);
+    const barHeight = 120;
+    let html = '<div class="trend-legend"><div class="trend-legend-item"><div class="trend-legend-swatch" style="background:#4A9FD9"></div>Created</div><div class="trend-legend-item"><div class="trend-legend-swatch" style="background:#4CAF50"></div>Resolved</div></div>';
+    html += '<div class="trend-container"><div class="trend-chart">';
+    for (const m of months) {{
+        const c = createdByMonth[m] || 0;
+        const r = resolvedByMonth[m] || 0;
+        const ch = Math.max(c / max * barHeight, 2);
+        const rh = Math.max(r / max * barHeight, 2);
+        html += `<div class="trend-month"><div class="trend-bar-group"><div class="trend-bar" style="width:14px;height:${{ch}}px;background:#4A9FD9" title="Created: ${{c}}"></div><div class="trend-bar" style="width:14px;height:${{rh}}px;background:#4CAF50" title="Resolved: ${{r}}"></div></div><div class="trend-month-label">${{m}}</div></div>`;
+    }}
+    html += '</div></div>';
+    el.innerHTML = html;
+}}
+
+// Progress table renderer (epic/sprint)
+function renderProgressTable(containerId, data, nameKey, sortId) {{
+    const el = document.getElementById(containerId);
+    if (!data || data.length === 0) {{ el.innerHTML = '<div class="no-data">No data available</div>'; return; }}
+    const cols = [
+        {{ key: nameKey, label: nameKey.charAt(0).toUpperCase() + nameKey.slice(1) }},
+        {{ key: 'total', label: 'Total' }},
+        {{ key: 'open', label: 'Open' }},
+        {{ key: 'closed', label: 'Closed' }},
+        {{ key: 'pct_done', label: '% Done' }},
+        {{ key: 'story_points', label: 'Points' }},
+    ];
+    let html = '<table><thead><tr>';
+    for (const c of cols) {{
+        html += `<th onclick="sortProgressTable('${{sortId}}', ${{JSON.stringify(containerId)}}, ${{JSON.stringify(nameKey)}}, '${{c.key}}')">${{c.label}}${{sortArrow(sortId, c.key)}}</th>`;
+    }}
+    html += '<th style="min-width:120px">Progress</th></tr></thead><tbody>';
+    for (const r of data) {{
+        html += `<tr><td>${{r[nameKey]}}</td><td>${{r.total}}</td><td>${{r.open}}</td><td>${{r.closed}}</td><td>${{r.pct_done}}%</td><td>${{r.story_points}}</td><td><div class="progress-bar-bg"><div class="progress-bar-fill" style="width:${{r.pct_done}}%"></div></div></td></tr>`;
+    }}
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}}
+function sortProgressTable(sortId, containerId, nameKey, colKey) {{
+    const dataMap = {{ 'epic': epicProgress, 'sprint': sprintProgress }};
+    sortTableData(sortId, dataMap[sortId], colKey);
+    renderProgressTable(containerId, dataMap[sortId], nameKey, sortId);
+}}
+
 // Assignee breakdown table
 const assigneeCols = [
     {{ key: 'assignee', label: 'Assignee' }},
@@ -956,6 +1291,7 @@ const assigneeCols = [
     {{ key: 'avg_age', label: 'Avg Age (days)' }},
     {{ key: 'overdue', label: 'Overdue' }},
     {{ key: 'stale', label: 'Stale' }},
+    {{ key: 'story_points', label: 'Points' }},
 ];
 function sortAssigneeBreakdown(colKey) {{
     sortTableData('ab', assigneeBreakdown, colKey);
@@ -972,7 +1308,7 @@ function renderAssigneeBreakdown() {{
     for (const r of assigneeBreakdown) {{
         const overdueClass = r.overdue > 0 ? ' style="color:var(--xps-danger);font-weight:600"' : '';
         const staleClass = r.stale > 0 ? ' style="color:var(--xps-warning);font-weight:600"' : '';
-        html += `<tr><td>${{r.assignee}}</td><td>${{r.total}}</td><td>${{r.open}}</td><td>${{r.closed}}</td><td>${{r.avg_age}}</td><td${{overdueClass}}>${{r.overdue}}</td><td${{staleClass}}>${{r.stale}}</td></tr>`;
+        html += `<tr><td>${{r.assignee}}</td><td>${{r.total}}</td><td>${{r.open}}</td><td>${{r.closed}}</td><td>${{r.avg_age}}</td><td${{overdueClass}}>${{r.overdue}}</td><td${{staleClass}}>${{r.stale}}</td><td>${{r.story_points}}</td></tr>`;
     }}
     html += '</tbody></table>';
     el.innerHTML = html;
@@ -1001,6 +1337,46 @@ function renderReporterBreakdown() {{
     for (const r of reporterBreakdown) {{
         const overdueClass = r.overdue > 0 ? ' style="color:var(--xps-danger);font-weight:600"' : '';
         html += `<tr><td>${{r.reporter}}</td><td>${{r.total}}</td><td>${{r.open}}</td><td>${{r.closed}}</td><td${{overdueClass}}>${{r.overdue}}</td></tr>`;
+    }}
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}}
+
+// Reporter-Assignee matrix
+const raCols = [
+    {{ key: 'reporter', label: 'Reporter' }},
+    {{ key: 'assignee', label: 'Assignee' }},
+    {{ key: 'count', label: 'Tickets' }},
+];
+function sortRAMatrix(colKey) {{
+    sortTableData('ra', raMatrix, colKey);
+    renderRAMatrix();
+}}
+function renderRAMatrix() {{
+    const el = document.getElementById('ra-matrix');
+    if (!raMatrix || raMatrix.length === 0) {{ el.innerHTML = '<div class="no-data">No data available</div>'; return; }}
+    let html = '<table><thead><tr>';
+    for (const c of raCols) {{
+        html += `<th onclick="sortRAMatrix('${{c.key}}')">${{c.label}}${{sortArrow('ra', c.key)}}</th>`;
+    }}
+    html += '</tr></thead><tbody>';
+    for (const r of raMatrix) {{
+        html += `<tr><td>${{r.reporter}}</td><td>${{r.assignee}}</td><td>${{r.count}}</td></tr>`;
+    }}
+    html += '</tbody></table>';
+    el.innerHTML = html;
+}}
+
+// Estimation accuracy table
+function renderEstimation() {{
+    const el = document.getElementById('estimation-accuracy');
+    if (!estimationData || estimationData.length === 0) {{ el.innerHTML = '<div class="no-data">No estimation data available (requires Original Estimate and Time Spent fields)</div>'; return; }}
+    let html = '<table><thead><tr><th>Issue Type</th><th>Tickets</th><th>Avg Estimated</th><th>Avg Actual</th><th>Accuracy</th></tr></thead><tbody>';
+    for (const r of estimationData) {{
+        let cls = 'accuracy-good';
+        if (r.accuracy_pct > 150 || r.accuracy_pct < 50) cls = 'accuracy-bad';
+        else if (r.accuracy_pct > 120 || r.accuracy_pct < 80) cls = 'accuracy-warn';
+        html += `<tr><td>${{r.type}}</td><td>${{r.count}}</td><td>${{r.avg_estimated}}</td><td>${{r.avg_actual}}</td><td class="${{cls}}">${{r.accuracy_pct}}%</td></tr>`;
     }}
     html += '</tbody></table>';
     el.innerHTML = html;
@@ -1151,7 +1527,7 @@ function sortTickets(col) {{
 function renderTicketTable() {{
     const el = document.getElementById('ticket-table');
     if (!allTickets || allTickets.length === 0) {{ el.innerHTML = '<div class="no-data">No ticket data available</div>'; return; }}
-    const cols = allHeaders.slice(0, 12); // Show first 12 columns max for readability
+    const cols = allHeaders.slice(0, 12);
     const totalPages = Math.ceil(filteredTickets.length / pageSize);
     const start = (currentPage - 1) * pageSize;
     const pageData = filteredTickets.slice(start, start + pageSize);
@@ -1174,7 +1550,6 @@ function renderTicketTable() {{
     html += '</tbody></table></div>';
     el.innerHTML = html;
 
-    // Pagination
     const pag = document.getElementById('pagination');
     if (totalPages <= 1) {{ pag.innerHTML = `<span>${{filteredTickets.length}} tickets</span>`; return; }}
     let pagHtml = `<span>${{filteredTickets.length}} tickets</span>`;
@@ -1198,16 +1573,24 @@ function goPage(p) {{
 }}
 
 // Render all
+renderTrend();
 renderBarChart('chart-status', statusData, statusColours);
 renderBarChart('chart-assignee', assigneeData, null);
 renderDonut('chart-priority', priorityData, priorityColours);
 renderDonut('chart-type', typeData, typeColours);
+renderBarChart('chart-components', componentData, null);
+renderBarChart('chart-labels', labelData, null);
+renderBarChart('priority-sla-chart', resolutionPriorityData, priorityColours);
+renderProgressTable('epic-progress', epicProgress, 'epic', 'epic');
+renderProgressTable('sprint-progress', sprintProgress, 'sprint', 'sprint');
 renderAssigneeBreakdown();
 renderReporterBreakdown();
+renderRAMatrix();
 buildStaleFilterOptions();
 renderStaleness();
 renderBarChart('resolution-chart', resolutionData, null);
 renderBarChart('age-chart', ageBucketsData, null);
+renderEstimation();
 renderOldest();
 renderTicketTable();
 </script>
@@ -1248,9 +1631,16 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.verbose:
         print(f"  Open: {data.open_tickets}, Closed: {data.closed_tickets}")
+        print(f"  Resolution rate: {data.resolution_rate}%")
+        print(f"  Avg resolution: {data.avg_resolution_days} days")
         print(f"  Stale (>{args.stale_days}d): {data.stale_tickets}")
         print(f"  Overdue: {data.overdue_tickets}")
+        print(f"  Unassigned: {data.unassigned_tickets}")
+        print(f"  Blocked: {data.blocked_tickets}")
         print(f"  Avg age (open): {data.avg_age_open_days} days")
+        print(f"  Story points: {data.total_story_points} total, {data.open_story_points} open")
+        print(f"  Epics: {len(data.epic_progress)}, Sprints: {len(data.sprint_progress)}")
+        print(f"  Components: {len(data.component_counts)}, Labels: {len(data.label_counts)}")
 
     html_content = generate_html(
         tickets, data,
