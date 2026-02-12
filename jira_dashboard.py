@@ -1820,7 +1820,7 @@ const priorityColours = {priority_colours_json};
 const typeColours = {type_colours_json};
 const defaultColours = ['#4A9FD9','#4CAF50','#FF9800','#F44336','#9C27B0','#00BCD4','#8BC34A','#FF5722','#607D8B','#E91E63'];
 function getColour(map, key, idx) {{
-    return map[key] || defaultColours[idx % defaultColours.length];
+    return (map && map[key]) || defaultColours[idx % defaultColours.length];
 }}
 
 // Bar chart renderer
